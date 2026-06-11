@@ -1,9 +1,11 @@
 use std::{
     io::{BufWriter, Write},
     path::PathBuf,
+    sync::mpsc,
+    thread::JoinHandle,
 };
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use bombadil::runner::PropertyViolation;
 use bombadil::specification::convert::ToSchema;
 use bombadil::specification::domain::Snapshot;
@@ -16,9 +18,25 @@ use crate::{driver::TerminalAction, state::TerminalState};
 pub type TerminalTraceEntry =
     TraceEntry<TerminalAction, bombadil_schema::TerminalStateSummary>;
 
+/// Writes trace entries on a dedicated thread so that JSON
+/// serialization and disk I/O (hundreds of kilobytes per state) overlap
+/// with the test loop instead of stalling it. The bounded channel
+/// provides backpressure if the writer cannot keep up.
 pub struct TraceWriter {
-    trace_file: BufWriter<File>,
-    buffer: Vec<u8>,
+    sender: mpsc::SyncSender<Message>,
+    worker: Option<JoinHandle<Result<()>>>,
+}
+
+enum Message {
+    Entry(Box<OwnedEntry>),
+    Flush(mpsc::SyncSender<Result<()>>),
+}
+
+struct OwnedEntry {
+    state: TerminalState,
+    action: Option<TerminalAction>,
+    snapshots: Vec<bombadil_schema::Snapshot>,
+    violations: Vec<bombadil_schema::PropertyViolation>,
 }
 
 /// Writes a trace entry byte-identically to serializing
@@ -96,6 +114,10 @@ fn write_grid(buffer: &mut Vec<u8>, grid: &TerminalGrid) -> Result<()> {
     Ok(())
 }
 
+// Bounds the number of in-flight entries (each a full grid clone) to
+// cap memory while letting the writer thread run behind the test loop.
+const PENDING_ENTRIES_MAX: usize = 32;
+
 impl TraceWriter {
     pub fn initialize(root_path: PathBuf) -> Result<Self> {
         std::fs::create_dir_all(&root_path)?;
@@ -105,9 +127,13 @@ impl TraceWriter {
             .create(true)
             .open(&trace_path)?;
         log::info!("storing trace in {}", root_path.display());
+        let (sender, receiver) = mpsc::sync_channel(PENDING_ENTRIES_MAX);
+        let worker = std::thread::Builder::new()
+            .name("bombadil-trace-writer".to_string())
+            .spawn(move || worker_loop(receiver, BufWriter::new(trace_file)))?;
         Ok(Self {
-            trace_file: BufWriter::new(trace_file),
-            buffer: Vec::new(),
+            sender,
+            worker: Some(worker),
         })
     }
 
@@ -119,28 +145,73 @@ impl TraceWriter {
         snapshots: &[Snapshot],
         violations: &[PropertyViolation],
     ) -> Result<()> {
-        let snapshots: Vec<bombadil_schema::Snapshot> =
-            snapshots.iter().map(|s| s.to_schema()).collect();
-        let violations: Vec<bombadil_schema::PropertyViolation> =
-            violations.iter().map(|v| v.to_schema()).collect();
-        self.buffer.clear();
-        write_entry(
-            &mut self.buffer,
-            Time::from_system_time(state.timestamp),
-            last_action,
-            state,
-            &snapshots,
-            &violations,
-        )?;
-        self.buffer.push(b'\n');
-        self.trace_file.write_all(&self.buffer)?;
+        let entry = Box::new(OwnedEntry {
+            state: state.clone(),
+            action: last_action.cloned(),
+            snapshots: snapshots.iter().map(|s| s.to_schema()).collect(),
+            violations: violations.iter().map(|v| v.to_schema()).collect(),
+        });
+        if self.sender.send(Message::Entry(entry)).is_err() {
+            return Err(self.worker_failure());
+        }
         Ok(())
     }
 
     pub fn flush(&mut self) -> Result<()> {
-        self.trace_file.flush()?;
-        Ok(())
+        let (ack_sender, ack_receiver) = mpsc::sync_channel(1);
+        if self.sender.send(Message::Flush(ack_sender)).is_err() {
+            return Err(self.worker_failure());
+        }
+        match ack_receiver.recv() {
+            Ok(result) => result,
+            Err(_) => Err(self.worker_failure()),
+        }
     }
+
+    /// Joins the worker thread to surface the error that made it exit.
+    fn worker_failure(&mut self) -> anyhow::Error {
+        match self.worker.take() {
+            Some(worker) => match worker.join() {
+                Ok(Ok(())) => {
+                    anyhow!("trace writer thread exited unexpectedly")
+                }
+                Ok(Err(error)) => error,
+                Err(_) => anyhow!("trace writer thread panicked"),
+            },
+            None => anyhow!("trace writer thread already failed"),
+        }
+    }
+}
+
+fn worker_loop(
+    receiver: mpsc::Receiver<Message>,
+    mut trace_file: BufWriter<File>,
+) -> Result<()> {
+    let mut buffer = Vec::new();
+    while let Ok(message) = receiver.recv() {
+        match message {
+            Message::Entry(entry) => {
+                buffer.clear();
+                write_entry(
+                    &mut buffer,
+                    Time::from_system_time(entry.state.timestamp),
+                    entry.action.as_ref(),
+                    &entry.state,
+                    &entry.snapshots,
+                    &entry.violations,
+                )?;
+                buffer.push(b'\n');
+                trace_file.write_all(&buffer)?;
+            }
+            Message::Flush(ack) => {
+                let result = trace_file.flush().map_err(Into::into);
+                // The flusher may have given up waiting; ignore that.
+                let _ = ack.send(result);
+            }
+        }
+    }
+    trace_file.flush()?;
+    Ok(())
 }
 
 #[cfg(test)]
