@@ -45,6 +45,12 @@ pub struct TerminalDriver {
     size: TerminalSize,
     quiescence_timeout: Duration,
     last_action: Option<TerminalAction>,
+    // Reused across frames: the ghostty render API is stateful and
+    // optimized for repeated updates (dirty-region tracking), so these
+    // are created once instead of per extracted state.
+    render_state: RenderState<'static>,
+    row_iterator: RowIterator<'static>,
+    cell_iterator: CellIterator<'static>,
 }
 
 impl TerminalDriver {
@@ -83,6 +89,9 @@ impl TerminalDriver {
                 size,
                 quiescence_timeout,
                 last_action: None,
+                render_state: RenderState::new()?,
+                row_iterator: RowIterator::new()?,
+                cell_iterator: CellIterator::new()?,
             },
             verifier,
         ))
@@ -100,18 +109,14 @@ impl TerminalDriver {
 
     #[hotpath::measure]
     fn extract_state(&mut self, terminated: bool) -> Result<TerminalState> {
-        let mut render_state = RenderState::new()?;
-        let mut row_iter_state = RowIterator::new()?;
-        let mut cell_iter_state = CellIterator::new()?;
-
-        let snapshot = render_state.update(&self.terminal)?;
-        let mut row_iter = row_iter_state.update(&snapshot)?;
+        let snapshot = self.render_state.update(&self.terminal)?;
+        let mut row_iter = self.row_iterator.update(&snapshot)?;
 
         let mut cells = Vec::with_capacity(
             usize::from(self.size.columns) * usize::from(self.size.rows),
         );
         while let Some(row) = row_iter.next() {
-            let mut cell_iter = cell_iter_state.update(row)?;
+            let mut cell_iter = self.cell_iterator.update(row)?;
             while let Some(cell) = cell_iter.next() {
                 let style = style_from_ghostty(&cell.style()?);
                 cells.push(match cell.raw_cell()?.wide()? {
