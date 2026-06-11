@@ -124,11 +124,7 @@ impl<Rng: TryRng + RngExt> RunStrategy<TerminalDriver>
                             if contents.is_empty() {
                                 write!(buffer, "{}", " ".style(style))?;
                             } else {
-                                write!(
-                                    buffer,
-                                    "{}",
-                                    format!("{}", contents).style(style)
-                                )?;
+                                write!(buffer, "{}", contents.style(style))?;
                             };
                         }
                         TerminalCell::Continuation { .. } => {}
