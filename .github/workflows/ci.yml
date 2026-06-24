@@ -19,7 +19,7 @@ concurrency:
 jobs:
   check-version:
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x86-sm
     outputs:
       changelog: ${{ steps.changelog.outputs.notes }}
     steps:
@@ -50,12 +50,11 @@ jobs:
 
   check:
     name: Nix flake checks
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x86-sm
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-nix
         with:
-          scope: checks
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Run flake checks
         run: nix flake check --print-build-logs
@@ -66,19 +65,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - runner: namespace-profile-linux-x86-sm
             target: x86_64-linux
-          - os: ubuntu-latest
+          - runner: namespace-profile-linux-aarch64-sm
             target: aarch64-linux
             package: aarch64-linux
-          - os: macos-15
+          - runner: namespace-profile-libghostty-mac
             target: aarch64-darwin
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-nix
         with:
-          scope: build-${{ matrix.target }}
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build package
         run: nix build .#${{ matrix.package || 'default' }} --print-build-logs
@@ -92,12 +90,11 @@ jobs:
         run: nix build .#docker --print-build-logs
 
   build-npm-package:
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x86-sm
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-nix
         with:
-          scope: npm-package
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build npm package
         run: nix build .#npm-package --print-build-logs
@@ -114,12 +111,11 @@ jobs:
           path: bombadil-npm-package.tar.gz
 
   build-manual:
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x86-sm
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-nix
         with:
-          scope: manual
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build manual
         run: nix build .#manual --print-build-logs
@@ -139,7 +135,7 @@ jobs:
   inspect-test:
     name: Inspect UI test
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x86-sm
     steps:
       - uses: actions/checkout@v7
       - uses: browser-actions/setup-chrome@v2
@@ -182,17 +178,19 @@ jobs:
           path: inspect-test-output/
 
   smoke-test:
-    name: Smoke test (${{ matrix.os }})
+    name: Smoke test (${{ matrix.name }})
     needs: build
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - name: Linux x86_64
+            runner: namespace-profile-linux-x86-sm
             artifact: bombadil-x86_64-linux
-          - os: macos-15
+          - name: macOS aarch64
+            runner: namespace-profile-libghostty-mac
             artifact: bombadil-aarch64-darwin
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
@@ -212,22 +210,24 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: terminal-test-output-${{ matrix.os }}
+          name: terminal-test-output-${{ matrix.name }}
           path: terminal-test-output/
 
   test-npm-package:
-    name: Test npm package (${{ matrix.os }})
+    name: Test npm package (${{ matrix.name }})
     needs: [build, build-npm-package]
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
+          - name: Linux x86_64
+            runner: namespace-profile-linux-x86-sm
             artifact: bombadil-x86_64-linux
             binary: bombadil-linux-x64
-          - os: macos-15
+          - name: macOS aarch64
+            runner: namespace-profile-libghostty-mac
             artifact: bombadil-aarch64-darwin
             binary: bombadil-darwin-arm64
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -262,7 +262,7 @@ jobs:
         smoke-test,
         test-npm-package,
       ]
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x86-sm
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -288,7 +288,7 @@ jobs:
   publish-npm:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [check-version, build, build-npm-package, release]
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x86-sm
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -315,7 +315,7 @@ jobs:
   publish-manual:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [build-manual, release]
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x86-sm
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -353,7 +353,7 @@ jobs:
       - inspect-test
       - smoke-test
       - test-npm-package
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x86-sm
     steps:
       - name: Check all jobs passed
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
