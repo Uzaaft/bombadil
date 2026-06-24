@@ -12,13 +12,14 @@ permissions:
   pages: write
   actions: write
 
-env:
-  ZIG_VERSION: "0.15.2"
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check-version:
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x86
     outputs:
       changelog: ${{ steps.changelog.outputs.notes }}
     steps:
@@ -47,236 +48,60 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-  build-x86_64-linux:
-    name: Build (x86_64-linux)
-    uses: ./.github/workflows/build-target.yml
-    with:
-      target: x86_64-linux
-      rust_target: x86_64-unknown-linux-musl
-      os: ubuntu-latest
-
-  build-aarch64-linux:
-    name: Build (aarch64-linux)
-    uses: ./.github/workflows/build-target.yml
-    with:
-      target: aarch64-linux
-      rust_target: aarch64-unknown-linux-musl
-      os: ubuntu-24.04-arm
-
-  build-aarch64-darwin:
-    name: Build (aarch64-darwin)
-    uses: ./.github/workflows/build-target.yml
-    with:
-      target: aarch64-darwin
-      rust_target: aarch64-apple-darwin
-      os: macos-15
-
   check:
-    name: Check (fmt + clippy + test)
-    runs-on: ubuntu-latest
+    name: Nix flake checks
+    runs-on: namespace-profile-linux-x86
     steps:
       - uses: actions/checkout@v7
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config clang lld git ca-certificates curl xz-utils
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-nix
         with:
-          toolchain: stable
-          components: rustfmt, clippy
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Run flake checks
+        run: nix flake check --print-build-logs
 
-      - name: Install Zig
-        # tip of mlugg/setup-zig#chenrui333/node-24 (Node 24 runtime); swap to a tagged release once available
-        uses: mlugg/setup-zig@272b55e6c4fcef353f6d923050ff32f018636378
-        with:
-          version: ${{ env.ZIG_VERSION }}
-
-      - name: Cache Zig global cache (ghostty build.zig.zon deps)
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/zig
-          key: zig-cache-Linux-x86_64-linux-${{ env.ZIG_VERSION }}
-          restore-keys: |
-            zig-cache-Linux-x86_64-linux-${{ env.ZIG_VERSION }}-
-
-      - name: Run sccache-cache
-        uses: mozilla-actions/sccache-action@v0.0.10
-
-      - name: cargo fmt
-        run: cargo fmt --all -- --check
-
-      - name: cargo clippy
-        env:
-          CC: clang
-          CXX: clang++
-          SCCACHE_GHA_ENABLED: "true"
-          RUSTC_WRAPPER: "sccache"
-          BOMBADIL_SKIP_INSPECT_BUILD: "1"
-        run: cargo clippy --workspace --exclude bombadil-inspect --all-targets -- -D warnings
-
-      - name: cargo test
-        env:
-          CC: clang
-          CXX: clang++
-          SCCACHE_GHA_ENABLED: "true"
-          RUSTC_WRAPPER: "sccache"
-          BOMBADIL_SKIP_INSPECT_BUILD: "1"
-          INSTA_UPDATE: "no"
-          # supports-color disables ANSI codes when stdout isn't a TTY (as in
-          # CI). Force colors so snapshot tests match the local TTY output.
-          FORCE_COLOR: "1"
-        run: cargo test --workspace --exclude bombadil-inspect --exclude bombadil-browser-integration-tests
-
-  browser-integration-tests:
-    name: Integration tests (browser)
-    runs-on: ubuntu-latest
+  build:
+    name: Build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: namespace-profile-linux-x86
+            target: x86_64-linux
+          - runner: namespace-profile-linux-aarch64-sm
+            target: aarch64-linux
+            package: aarch64-linux
+          - runner: namespace-profile-libghostty-mac
+            target: aarch64-darwin
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config clang lld git ca-certificates curl xz-utils
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-nix
         with:
-          toolchain: stable
-          components: rustfmt, clippy
-
-      - name: Run sccache-cache
-        uses: mozilla-actions/sccache-action@v0.0.10
-
-      - name: Install Chromium
-        uses: browser-actions/setup-chrome@v2
-        id: setup-chrome
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Build package
+        run: nix build .#${{ matrix.package || 'default' }} --print-build-logs
+      - name: Upload binary
+        uses: actions/upload-artifact@v7
         with:
-          chrome-version: stable
-
-      - name: cargo test (browser integration tests)
-        env:
-          CC: clang
-          CXX: clang++
-          SCCACHE_GHA_ENABLED: "true"
-          RUSTC_WRAPPER: "sccache"
-          BOMBADIL_SKIP_INSPECT_BUILD: "1"
-          INSTA_UPDATE: "no"
-          FORCE_COLOR: "1"
-          CHROME: ${{ steps.setup-chrome.outputs.chrome-path }}
-        # Run inside a fresh user+network namespace with only loopback up.
-        # Tests can hit local servers but anything reaching outbound fails fast.
-        run: |
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-          EXECUTABLE=$(cargo test --no-run -p bombadil-browser-integration-tests --no-default-features --message-format=json | jq -r 'select(.target.name == "integration_tests") | .executable')
-          unshare --user --map-root-user --net -- bash -c "
-            ip link set lo up
-            $EXECUTABLE
-          "
+          name: bombadil-${{ matrix.target }}
+          path: result/bin/bombadil
+      - name: Build Docker image
+        if: matrix.target == 'x86_64-linux'
+        run: nix build .#docker --print-build-logs
 
   build-npm-package:
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x86
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: ./.github/actions/setup-nix
         with:
-          node-version: "24"
-      - name: Install TypeScript
-        run: npm install -g typescript@5
-      - name: Build npm package layout
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Build npm package
+        run: nix build .#npm-package --print-build-logs
+      - name: Copy package
         run: |
-          set -euo pipefail
-          version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
-          out=npm-pkg-dist
-          mkdir -p "$out/dist" "$out/bin"
-
-          tsc \
-            -p lib/bombadil/src/specification/tsconfig.json \
-            --target es6 \
-            --declaration \
-            --emitDeclarationOnly \
-            --stripInternal \
-            --outDir "$out/dist"
-
-          cat > "$out/package.json" <<EOF
-          {
-            "name": "@antithesishq/bombadil",
-            "version": "$version",
-            "description": "Property-based testing tool for web UIs",
-            "types": "./dist/index.d.ts",
-            "bin": { "bombadil": "./bin/bombadil.js" },
-            "exports": {
-              ".":                              { "types": "./dist/index.d.ts" },
-              "./browser":                      { "types": "./dist/browser/index.d.ts" },
-              "./browser/defaults":             { "types": "./dist/browser/defaults.d.ts" },
-              "./browser/defaults/actions":     { "types": "./dist/browser/defaults/actions.d.ts" },
-              "./browser/defaults/properties":  { "types": "./dist/browser/defaults/properties.d.ts" },
-              "./terminal":                     { "types": "./dist/terminal/index.d.ts" },
-              "./random":                       { "types": "./dist/random.d.ts" },
-              "./actions":                      { "types": "./dist/actions.d.ts" },
-              "./internal":                     { "types": "./dist/internal.d.ts" }
-            },
-            "files": ["dist", "README.md", "bin", "binaries"],
-            "keywords": ["testing", "property-based-testing", "fuzzing", "web", "browser", "ui", "antithesis"],
-            "license": "MIT",
-            "repository": { "type": "git", "url": "https://github.com/antithesishq/bombadil" },
-            "homepage": "https://github.com/antithesishq/bombadil"
-          }
-          EOF
-
-          cat > "$out/README.md" <<EOF
-          # @antithesishq/bombadil
-
-          [![Version](https://img.shields.io/badge/version-$version-blue)](https://github.com/antithesishq/bombadil/releases/tag/v$version)
-
-          [Bombadil](https://github.com/antithesishq/bombadil) is property-based testing
-          for web UIs, autonomously exploring and validating correctness properties,
-          *finding harder bugs earlier*.
-
-          ## Install
-
-          \`\`\`
-          npm install --save-dev @antithesishq/bombadil
-          \`\`\`
-
-          See the [Bombadil repository](https://github.com/antithesishq/bombadil) for
-          full usage instructions.
-          EOF
-
-          cat > "$out/bin/bombadil.js" <<'EOF'
-          #!/usr/bin/env node
-          "use strict";
-          const path = require("path");
-          const { spawnSync } = require("child_process");
-          const os = require("os");
-          const binaries = {
-            "linux-x64":    "bombadil-linux-x64",
-            "linux-arm64":  "bombadil-linux-arm64",
-            "darwin-arm64": "bombadil-darwin-arm64",
-          };
-          const key = `${os.platform()}-${os.arch()}`;
-          const binary = binaries[key];
-          if (!binary) {
-            process.stderr.write(`bombadil: unsupported platform ${key}\n`);
-            process.exit(1);
-          }
-          const result = spawnSync(
-            path.join(__dirname, "..", "binaries", binary),
-            process.argv.slice(2),
-            { stdio: "inherit" }
-          );
-          if (result.error) {
-            process.stderr.write(`bombadil: ${result.error.message}\n`);
-            process.exit(1);
-          }
-          process.exit(result.status ?? 1);
-          EOF
-          chmod +x "$out/bin/bombadil.js"
-
+          mkdir -p npm-pkg-dist
+          cp -r result/* npm-pkg-dist/
       - name: Create package tarball
         run: tar -czf bombadil-npm-package.tar.gz -C npm-pkg-dist .
       - name: Upload package artifact
@@ -286,54 +111,38 @@ jobs:
           path: bombadil-npm-package.tar.gz
 
   build-manual:
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x86
     steps:
       - uses: actions/checkout@v7
-
-      - name: Install manual build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pandoc make esbuild fonts-ibm-plex \
-            texlive-luatex texlive-latex-base texlive-latex-recommended \
-            texlive-latex-extra texlive-fonts-recommended texlive-fonts-extra \
-            texlive-science texlive-xetex lmodern
-
+      - uses: ./.github/actions/setup-nix
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build manual
-        env:
-          OSFONTDIR: "/usr/share/fonts/opentype/ibm-plex:/usr/share/fonts/opentype"
-        run: |
-          cd docs/manual
-          version=$(grep '^version' ../../Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
-          make all VERSION="$version"
-          rm -f target/.built
-
+        run: nix build .#manual --print-build-logs
       - name: Create manual archive
-        run: tar -czf bombadil-manual.tar.gz -C docs/manual/target .
-
+        run: tar -czf bombadil-manual.tar.gz -C result .
       - name: Upload manual artifact
         uses: actions/upload-artifact@v7
         with:
           name: bombadil-manual
           path: bombadil-manual.tar.gz
-
       - name: Upload manual for GitHub Pages
         uses: actions/upload-artifact@v7
         with:
           name: manual-pages
-          path: docs/manual/target/
+          path: result/
 
   inspect-test:
     name: Inspect UI test
-    needs: build-x86_64-linux
-    runs-on: ubuntu-latest
+    needs: build
+    runs-on: namespace-profile-linux-x86
     steps:
       - uses: actions/checkout@v7
       - uses: browser-actions/setup-chrome@v2
         id: setup-chrome
         with:
           chrome-version: stable
-      - run: echo "CHROME=${{ steps.setup-chrome.outputs.chrome-path }}" >> $GITHUB_ENV
+      - run: echo "CHROME=${{ steps.setup-chrome.outputs.chrome-path }}" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v8
         with:
           name: bombadil-x86_64-linux
@@ -350,7 +159,7 @@ jobs:
           TIME_LIMIT: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && '1m' || '20s' }}
         run: |
           ./bombadil browser inspect report --no-open --port 1073 &
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if curl -sf http://localhost:1073 > /dev/null 2>&1; then break; fi
             sleep 1
           done
@@ -369,23 +178,25 @@ jobs:
           path: inspect-test-output/
 
   smoke-test:
-    name: Smoke test (${{ matrix.os }})
-    needs: [build-x86_64-linux, build-aarch64-darwin]
+    name: Smoke test (${{ matrix.name }})
+    needs: build
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - name: Linux x86_64
+            runner: namespace-profile-linux-x86
             artifact: bombadil-x86_64-linux
-          - os: macos-15
+          - name: macOS aarch64
+            runner: namespace-profile-libghostty-mac
             artifact: bombadil-aarch64-darwin
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           name: ${{ matrix.artifact }}
-      - name: Test binary runs
+      - name: Test binary runs without Nix
         run: |
           chmod +x bombadil
           ./bombadil --version
@@ -399,22 +210,24 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: terminal-test-output-${{ matrix.os }}
+          name: terminal-test-output-${{ matrix.name }}
           path: terminal-test-output/
 
   test-npm-package:
-    name: Test npm package (${{ matrix.os }})
-    needs: [build-x86_64-linux, build-aarch64-darwin, build-npm-package]
+    name: Test npm package (${{ matrix.name }})
+    needs: [build, build-npm-package]
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
+          - name: Linux x86_64
+            runner: namespace-profile-linux-x86
             artifact: bombadil-x86_64-linux
             binary: bombadil-linux-x64
-          - os: macos-15
+          - name: macOS aarch64
+            runner: namespace-profile-libghostty-mac
             artifact: bombadil-aarch64-darwin
             binary: bombadil-darwin-arm64
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -443,15 +256,13 @@ jobs:
       [
         check-version,
         check,
-        build-x86_64-linux,
-        build-aarch64-linux,
-        build-aarch64-darwin,
+        build,
         build-npm-package,
         build-manual,
         smoke-test,
         test-npm-package,
       ]
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x86
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -476,16 +287,8 @@ jobs:
 
   publish-npm:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs:
-      [
-        check-version,
-        build-x86_64-linux,
-        build-aarch64-linux,
-        build-aarch64-darwin,
-        build-npm-package,
-        release,
-      ]
-    runs-on: ubuntu-latest
+    needs: [check-version, build, build-npm-package, release]
+    runs-on: namespace-profile-linux-x86
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -501,7 +304,7 @@ jobs:
         run: |
           mkdir -p pkg/binaries
           cp artifacts/bombadil-x86_64-linux/bombadil  pkg/binaries/bombadil-linux-x64
-          cp artifacts/bombadil-aarch64-linux/bombadil pkg/binaries/bombadil-linux-arm64
+          cp artifacts/bombadil-aarch64-linux/bombadil  pkg/binaries/bombadil-linux-arm64
           cp artifacts/bombadil-aarch64-darwin/bombadil pkg/binaries/bombadil-darwin-arm64
           chmod +x pkg/binaries/*
       - name: Publish to npm
@@ -512,7 +315,7 @@ jobs:
   publish-manual:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [build-manual, release]
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x86
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -523,7 +326,15 @@ jobs:
           name: manual-pages
           path: manual
       - name: Add llms-full.txt
-        run: cp manual/bombadil-manual.txt manual/llms-full.txt
+        run: |
+          cat > manual/llms-full.txt <<'EOF'
+          # The Bombadil Manual
+
+          Bombadil has two drivers. Fetch the plain-text manual for the one you need:
+
+          - Browser driver: browser/bombadil-manual.txt
+          - Terminal driver: terminal/bombadil-manual.txt
+          EOF
       - name: Upload to GitHub Pages
         uses: actions/upload-pages-artifact@v5
         with:
@@ -535,17 +346,14 @@ jobs:
   all-checks-passed:
     if: always()
     needs:
-      - build-x86_64-linux
-      - build-aarch64-linux
-      - build-aarch64-darwin
       - check
-      - browser-integration-tests
+      - build
       - build-npm-package
       - build-manual
       - inspect-test
       - smoke-test
       - test-npm-package
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x86
     steps:
       - name: Check all jobs passed
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')

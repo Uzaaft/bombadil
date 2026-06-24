@@ -1,0 +1,79 @@
+name: Setup Nix
+description: >
+  Install Nix, restore writable Zig caches through Namespace, and (on main
+  only) configure Cachix for pushing.
+
+inputs:
+  cachix-auth-token:
+    description: >
+      Cachix auth token, only used on main pushes to enable cache writes.
+      PRs read cachix as a substituter via flake.nix's nixConfig and don't
+      need a token.
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare Linux Zig cache directories
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo mkdir -p /zig/local-cache /zig/global-cache
+        sudo chown -R "$USER:$(id -gn)" /zig
+        {
+          echo "ZIG_LOCAL_CACHE_DIR=/zig/local-cache"
+          echo "ZIG_GLOBAL_CACHE_DIR=/zig/global-cache"
+        } >> "$GITHUB_ENV"
+
+    - name: Restore Linux Zig cache
+      if: runner.os == 'Linux'
+      uses: namespacelabs/nscloud-cache-action@15799a6b54e5765f85b2aac25b3f0df43ed571c0 # v1.4.3
+      with:
+        path: |
+          /zig
+
+    - name: Prepare macOS Zig cache directories
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        mkdir -p /Users/runner/zig/local-cache /Users/runner/zig/global-cache
+        {
+          echo "ZIG_LOCAL_CACHE_DIR=/Users/runner/zig/local-cache"
+          echo "ZIG_GLOBAL_CACHE_DIR=/Users/runner/zig/global-cache"
+        } >> "$GITHUB_ENV"
+
+    - name: Restore macOS Namespace caches
+      if: runner.os == 'macOS'
+      uses: namespacelabs/nscloud-cache-action@15799a6b54e5765f85b2aac25b3f0df43ed571c0 # v1.4.3
+      with:
+        cache: |
+          xcode
+        path: |
+          /Users/runner/zig
+
+    - name: Install Nix on Linux
+      if: runner.os == 'Linux'
+      uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31.10.6
+      with:
+        nix_path: nixpkgs=channel:nixos-unstable
+
+    - name: Install Nix on macOS
+      if: runner.os == 'macOS'
+      uses: DeterminateSystems/nix-installer-action@main
+      with:
+        determinate: true
+
+    - name: Configure Nix
+      shell: bash
+      run: |
+        mkdir -p ~/.config/nix
+        cat >> ~/.config/nix/nix.conf <<'EOF'
+        experimental-features = nix-command flakes
+        accept-flake-config = true
+        EOF
+
+    - if: github.ref == 'refs/heads/main'
+      uses: cachix/cachix-action@v15
+      with:
+        name: bombadil
+        authToken: ${{ inputs.cachix-auth-token }}
