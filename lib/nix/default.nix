@@ -32,6 +32,7 @@ let
   # `GHOSTTY_ZIG_SYSTEM_DIR` is set), keeping the Zig build hermetic.
   ghosttyZigDeps = callPackage "${ghosttySrc}/build.zig.zon.nix" {
     name = "bombadil-ghostty-zig-deps";
+    inherit zig_0_15;
   };
   ghosttyEnv = {
     GHOSTTY_SOURCE_DIR = "${ghosttySrc}";
@@ -101,9 +102,29 @@ let
         sed -i "/^name = \"$crate\"/{n;s/^version = .*/version = \"0.0.0\"/}" $out/Cargo.lock
       done
     '';
+  overrideVendorCargoPackage =
+    package: drv:
+    if package.name == "hegeltest-c" && package.version == "0.21.2" then
+      runCommand "${drv.name}-patched" { } ''
+        cp -r ${drv} $out
+        chmod -R +w $out
+        cat > $out/build.rs <<'EOF'
+        fn main() {
+            println!("cargo:rerun-if-changed=src/lib.rs");
+            println!("cargo:rerun-if-changed=cbindgen.toml");
+        }
+        EOF
+      ''
+    else
+      drv;
+  cargoVendorDir = craneLib.vendorCargoDeps {
+    src = depsSrc;
+    inherit overrideVendorCargoPackage;
+  };
 
   commonArgs = {
     inherit src;
+    inherit cargoVendorDir;
     nativeBuildInputs = [
       trunk
       wasm-bindgen-cli
@@ -168,6 +189,7 @@ in
       inherit cargoArtifacts;
       nativeCheckInputs = [ chromium ];
       pname = "bombadil";
+      BOMBADIL_SKIP_INSPECT_BUILD = "1";
       preCheck = ''
         export FONTCONFIG_FILE=${makeFontsConf { fontDirectories = [ freefont_ttf ]; }}
         export HOME=$(mktemp -d)
@@ -186,6 +208,7 @@ in
     // {
       inherit cargoArtifacts;
       pname = "bombadil";
+      BOMBADIL_SKIP_INSPECT_BUILD = "1";
       cargoClippyExtraArgs = "--all-targets -- -D warnings";
     }
   );

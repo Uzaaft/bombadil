@@ -1,7 +1,7 @@
 name: Setup Nix
 description: >
-  Install Nix via nix-quick-install, restore /nix/store from the GitHub
-  Actions cache, and (on main only) configure cachix for pushing.
+  Install Nix via nix-quick-install, restore Nix build artifacts from the
+  GitHub Actions cache, and (on main only) configure cachix for pushing.
 
 inputs:
   scope:

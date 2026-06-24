@@ -12,6 +12,10 @@ permissions:
   pages: write
   actions: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check-version:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -19,7 +23,7 @@ jobs:
     outputs:
       changelog: ${{ steps.changelog.outputs.notes }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify tag matches Cargo.toml version
         run: |
           cargo_version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
@@ -44,9 +48,22 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+  check:
+    name: Nix flake checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-nix
+        with:
+          scope: checks
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Run flake checks
+        run: nix flake check --print-build-logs
+
   build:
     name: Build (${{ matrix.target }})
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -54,37 +71,36 @@ jobs:
           - os: ubuntu-latest
             target: aarch64-linux
             package: aarch64-linux
-          - os: macos-latest
+          - os: macos-15
             target: aarch64-darwin
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-nix
         with:
           scope: build-${{ matrix.target }}
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - run: nix flake check .
       - name: Build package
-        run: nix build .#${{ matrix.package || 'default' }}
+        run: nix build .#${{ matrix.package || 'default' }} --print-build-logs
       - name: Upload binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bombadil-${{ matrix.target }}
           path: result/bin/bombadil
       - name: Build Docker image
         if: matrix.target == 'x86_64-linux'
-        run: nix build ".#docker"
+        run: nix build .#docker --print-build-logs
 
   build-npm-package:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-nix
         with:
           scope: npm-package
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build npm package
-        run: nix build .#npm-package
+        run: nix build .#npm-package --print-build-logs
       - name: Copy package
         run: |
           mkdir -p npm-pkg-dist
@@ -92,7 +108,7 @@ jobs:
       - name: Create package tarball
         run: tar -czf bombadil-npm-package.tar.gz -C npm-pkg-dist .
       - name: Upload package artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bombadil-npm-package
           path: bombadil-npm-package.tar.gz
@@ -100,22 +116,22 @@ jobs:
   build-manual:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-nix
         with:
           scope: manual
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build manual
-        run: nix build .#manual
+        run: nix build .#manual --print-build-logs
       - name: Create manual archive
         run: tar -czf bombadil-manual.tar.gz -C result .
       - name: Upload manual artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bombadil-manual
           path: bombadil-manual.tar.gz
       - name: Upload manual for GitHub Pages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: manual-pages
           path: result/
@@ -125,13 +141,13 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: browser-actions/setup-chrome@v1
+      - uses: actions/checkout@v7
+      - uses: browser-actions/setup-chrome@v2
         id: setup-chrome
         with:
           chrome-version: stable
-      - run: echo "CHROME=${{ steps.setup-chrome.outputs.chrome-path }}" >> $GITHUB_ENV
-      - uses: actions/download-artifact@v4
+      - run: echo "CHROME=${{ steps.setup-chrome.outputs.chrome-path }}" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v8
         with:
           name: bombadil-x86_64-linux
       - name: Generate report
@@ -143,23 +159,24 @@ jobs:
             --exit-on-violation \
             --time-limit 30s || true
       - name: Test inspect UI
+        env:
+          TIME_LIMIT: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && '1m' || '20s' }}
         run: |
           ./bombadil browser inspect report --no-open --port 1073 &
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if curl -sf http://localhost:1073 > /dev/null 2>&1; then break; fi
             sleep 1
           done
-          export RUST_LOG=debug
           ./bombadil browser test \
             --headless --no-sandbox \
             --instrument-javascript="" \
             --output-path inspect-test-output \
-            --time-limit 1m \
+            --time-limit "$TIME_LIMIT" \
             http://localhost:1073 \
             lib/bombadil-inspect/test/inspect.spec.ts
       - name: Upload inspect test output
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: inspect-test-output
           path: inspect-test-output/
@@ -168,16 +185,17 @@ jobs:
     name: Smoke test (${{ matrix.os }})
     needs: build
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             artifact: bombadil-x86_64-linux
-          - os: macos-latest
+          - os: macos-15
             artifact: bombadil-aarch64-darwin
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ matrix.artifact }}
       - name: Test binary runs without Nix
@@ -185,7 +203,17 @@ jobs:
           chmod +x bombadil
           ./bombadil --version
       - name: Test terminal subcommand
-        run: ./bombadil terminal test --specification lib/bombadil-terminal/examples/cat.ts head -n 100
+        run: |
+          ./bombadil terminal test \
+            --specification lib/bombadil-terminal/examples/cat.ts \
+            --output-path terminal-test-output \
+            head -n 100
+      - name: Upload terminal test output
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: terminal-test-output-${{ matrix.os }}
+          path: terminal-test-output/
 
   test-npm-package:
     name: Test npm package (${{ matrix.os }})
@@ -196,18 +224,18 @@ jobs:
           - os: ubuntu-latest
             artifact: bombadil-x86_64-linux
             binary: bombadil-linux-x64
-          - os: macos-latest
+          - os: macos-15
             artifact: bombadil-aarch64-darwin
             binary: bombadil-darwin-arm64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: bombadil-npm-package
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ matrix.artifact }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "24"
       - name: Test npm package end to end
@@ -227,6 +255,7 @@ jobs:
     needs:
       [
         check-version,
+        check,
         build,
         build-npm-package,
         build-manual,
@@ -235,7 +264,7 @@ jobs:
       ]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
       - name: Prepare release binaries
@@ -245,7 +274,7 @@ jobs:
             mv artifacts/bombadil-$target/bombadil artifacts/bombadil-$target/bombadil-$target
           done
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           draft: true
           body: ${{ needs.check-version.outputs.changelog }}
@@ -261,14 +290,14 @@ jobs:
     needs: [check-version, build, build-npm-package, release]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
       - name: Extract npm package
         run: |
           mkdir -p pkg
           tar -xzf artifacts/bombadil-npm-package/bombadil-npm-package.tar.gz -C pkg
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "24"
       - name: Bundle binaries
@@ -292,7 +321,7 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Download manual pages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: manual-pages
           path: manual
@@ -307,9 +336,25 @@ jobs:
           - Terminal driver: terminal/bombadil-manual.txt
           EOF
       - name: Upload to GitHub Pages
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: manual
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
+
+  all-checks-passed:
+    if: always()
+    needs:
+      - check
+      - build
+      - build-npm-package
+      - build-manual
+      - inspect-test
+      - smoke-test
+      - test-npm-package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check all jobs passed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1

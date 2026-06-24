@@ -36,6 +36,53 @@
         rustToolchainWasm = pkgs.rust-bin.stable.latest.default.override {
           targets = [ "wasm32-unknown-unknown" ];
         };
+        wasmBindgenCli =
+          let
+            version = "0.2.125";
+            asset =
+              if pkgs.stdenv.isLinux && pkgs.stdenv.isx86_64 then
+                "x86_64-unknown-linux-musl"
+              else if pkgs.stdenv.isLinux && pkgs.stdenv.isAarch64 then
+                "aarch64-unknown-linux-gnu"
+              else if pkgs.stdenv.isDarwin && pkgs.stdenv.isAarch64 then
+                "aarch64-apple-darwin"
+              else if pkgs.stdenv.isDarwin && pkgs.stdenv.isx86_64 then
+                "x86_64-apple-darwin"
+              else
+                throw "wasm-bindgen-cli: unsupported platform";
+            hash =
+              if pkgs.stdenv.isLinux && pkgs.stdenv.isx86_64 then
+                "sha256-Idge90FKClhYYaYOpK4reXDsyu0J1KTgX4vEsVmCfeo="
+              else if pkgs.stdenv.isLinux && pkgs.stdenv.isAarch64 then
+                "sha256-ed0HMIbqDkf+I/+uAekccpRFtZtB8Ebb+DzY9dmImbA="
+              else if pkgs.stdenv.isDarwin && pkgs.stdenv.isAarch64 then
+                "sha256-K0b8Aaai9byyTlxekq3yFqOO9PV1QrUpG0T6NPdqxtI="
+              else if pkgs.stdenv.isDarwin && pkgs.stdenv.isx86_64 then
+                "sha256-fhf2ZWWGpkLVjNd+Y9aW2O+I3xTqRXPEWvaAERF345s="
+              else
+                throw "wasm-bindgen-cli: unsupported platform";
+          in
+          pkgs.stdenv.mkDerivation {
+            pname = "wasm-bindgen-cli";
+            inherit version;
+            src = pkgs.fetchurl {
+              url = "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${version}/wasm-bindgen-${version}-${asset}.tar.gz";
+              inherit hash;
+            };
+            nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [
+              pkgs.autoPatchelfHook
+            ];
+            installPhase = ''
+              runHook preInstall
+              mkdir -p $out/bin
+              install -m755 wasm-bindgen wasm-bindgen-test-runner wasm2es6js $out/bin/
+              runHook postInstall
+            '';
+            meta = {
+              description = "CLI for wasm-bindgen, pinned to match Cargo.toml's runtime crate";
+              mainProgram = "wasm-bindgen";
+            };
+          };
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchainWasm;
         craneLibStatic = (crane.mkLib pkgs.pkgsCross.musl64).overrideToolchain (
           p:
@@ -61,15 +108,17 @@
         ghosttySrc = pkgs.fetchFromGitHub {
           owner = "ghostty-org";
           repo = "ghostty";
-          rev = "bfe633a9487892ff3d27ed727db540267f22ef90";
-          sha256 = "1zmybfhrz64h6kibx23ixqsi7x9aw7c3szyb39zswh7mvg517297";
+          rev = "fdbf9ff3a31d7531b691cb49c98fc465a1a503a0";
+          hash = "sha256-TW2dtJ1wZGtdyqQ4YAsfjbTLURhMISIMNK0c0aIy1xM=";
         };
         bombadil = pkgs.callPackage ./lib/nix/default.nix {
           inherit craneLib craneLibStatic ghosttySrc;
+          wasm-bindgen-cli = wasmBindgenCli;
         };
         bombadilAarch64 = pkgs.callPackage ./lib/nix/default.nix {
           inherit craneLib ghosttySrc;
           craneLibStatic = craneLibAarch64;
+          wasm-bindgen-cli = wasmBindgenCli;
           cargoTarget = "aarch64-unknown-linux-musl";
         };
       in
@@ -112,7 +161,7 @@
               # nativeBuildInputs takes priority over inputsFrom in
               # PATH, so rustToolchainWasm shadows crane's toolchain.
               nativeBuildInputs = [ rustToolchainWasm ];
-              packages = [ (pkgs.callPackage ./nix/cargo-hotpath.nix { }) ];
+              packages = [ (pkgs.callPackage ./lib/nix/cargo-hotpath.nix { }) ];
               buildInputs =
                 with pkgs;
                 [
@@ -139,7 +188,7 @@
 
                   # WASM/Inspect UI
                   trunk
-                  wasm-bindgen-cli
+                  wasmBindgenCli
                   binaryen
 
                   # Release automation
