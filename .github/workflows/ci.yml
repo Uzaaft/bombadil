@@ -19,7 +19,7 @@ concurrency:
 jobs:
   check-version:
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: namespace-profile-linux-x86-sm
+    runs-on: namespace-profile-linux-x86
     outputs:
       changelog: ${{ steps.changelog.outputs.notes }}
     steps:
@@ -50,7 +50,7 @@ jobs:
 
   check:
     name: Nix flake checks
-    runs-on: namespace-profile-linux-x86-sm
+    runs-on: namespace-profile-linux-x86
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-nix
@@ -65,7 +65,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: namespace-profile-linux-x86-sm
+          - runner: namespace-profile-linux-x86
             target: x86_64-linux
           - runner: namespace-profile-linux-aarch64-sm
             target: aarch64-linux
@@ -90,7 +90,7 @@ jobs:
         run: nix build .#docker --print-build-logs
 
   build-npm-package:
-    runs-on: namespace-profile-linux-x86-sm
+    runs-on: namespace-profile-linux-x86
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-nix
@@ -111,7 +111,7 @@ jobs:
           path: bombadil-npm-package.tar.gz
 
   build-manual:
-    runs-on: namespace-profile-linux-x86-sm
+    runs-on: namespace-profile-linux-x86
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-nix
@@ -135,7 +135,7 @@ jobs:
   inspect-test:
     name: Inspect UI test
     needs: build
-    runs-on: namespace-profile-linux-x86-sm
+    runs-on: namespace-profile-linux-x86
     steps:
       - uses: actions/checkout@v7
       - uses: browser-actions/setup-chrome@v2
@@ -185,7 +185,7 @@ jobs:
       matrix:
         include:
           - name: Linux x86_64
-            runner: namespace-profile-linux-x86-sm
+            runner: namespace-profile-linux-x86
             artifact: bombadil-x86_64-linux
           - name: macOS aarch64
             runner: namespace-profile-libghostty-mac
@@ -220,7 +220,7 @@ jobs:
       matrix:
         include:
           - name: Linux x86_64
-            runner: namespace-profile-linux-x86-sm
+            runner: namespace-profile-linux-x86
             artifact: bombadil-x86_64-linux
             binary: bombadil-linux-x64
           - name: macOS aarch64
@@ -262,7 +262,7 @@ jobs:
         smoke-test,
         test-npm-package,
       ]
-    runs-on: namespace-profile-linux-x86-sm
+    runs-on: namespace-profile-linux-x86
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -288,7 +288,7 @@ jobs:
   publish-npm:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [check-version, build, build-npm-package, release]
-    runs-on: namespace-profile-linux-x86-sm
+    runs-on: namespace-profile-linux-x86
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -315,7 +315,7 @@ jobs:
   publish-manual:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [build-manual, release]
-    runs-on: namespace-profile-linux-x86-sm
+    runs-on: namespace-profile-linux-x86
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -353,7 +353,7 @@ jobs:
       - inspect-test
       - smoke-test
       - test-npm-package
-    runs-on: namespace-profile-linux-x86-sm
+    runs-on: namespace-profile-linux-x86
     steps:
       - name: Check all jobs passed
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
