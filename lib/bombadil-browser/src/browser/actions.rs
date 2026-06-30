@@ -1,7 +1,10 @@
+use std::ops::RangeInclusive;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
 use bombadil::driver::FromGeneratedAction;
+use bombadil::specification::generators::StringGenerator;
+use bombadil_schema::browser::Fingerprint;
 use chromiumoxide::Page;
 use chromiumoxide::cdp::browser_protocol::{dom, emulation, input, page};
 use serde::{Deserialize, Serialize};
@@ -18,34 +21,33 @@ pub struct ActionOptions {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum BrowserAction {
+pub enum BrowserAction<U8 = u8, U16 = u16, U64 = u64, F64 = f64, Text = String>
+{
     Back,
     Forward,
     Click {
-        name: String,
-        content: Option<String>,
-        point: Point,
+        fingerprint: Fingerprint,
+        point: Point<F64>,
     },
     DoubleClick {
-        name: String,
-        content: Option<String>,
-        point: Point,
-        delay_millis: u64,
+        fingerprint: Fingerprint,
+        point: Point<F64>,
+        delay_millis: U64,
     },
     TypeText {
-        text: String,
-        delay_millis: u64,
+        text: Text,
+        delay_millis: U64,
     },
     PressKey {
         code: u8,
     },
     ScrollUp {
-        origin: Point,
-        distance: f64,
+        origin: Point<F64>,
+        distance: F64,
     },
     ScrollDown {
-        origin: Point,
-        distance: f64,
+        origin: Point<F64>,
+        distance: F64,
     },
     Reload,
     Wait,
@@ -54,21 +56,29 @@ pub enum BrowserAction {
         files: Vec<String>,
     },
     MouseDrag {
-        from: Point,
-        to: Point,
-        steps: u8,
-        delay_millis: u64,
+        from: Point<F64>,
+        to: Point<F64>,
+        steps: U8,
+        delay_millis: U64,
     },
     SetViewport {
-        width: u16,
-        height: u16,
+        width: U16,
+        height: U16,
     },
 }
 
-impl FromGeneratedAction for BrowserAction {
+pub type BrowserActionTemplate = BrowserAction<
+    RangeInclusive<u8>,
+    RangeInclusive<u16>,
+    RangeInclusive<u64>,
+    RangeInclusive<f64>,
+    StringGenerator,
+>;
+
+impl FromGeneratedAction for BrowserActionTemplate {
     fn from_generated(value: json::Value) -> Result<Self> {
         let js_action: JsAction = json::from_value(value)?;
-        js_action.into_browser_action()
+        js_action.try_into()
     }
 }
 
@@ -141,8 +151,10 @@ impl BrowserAction {
                 )
                 .await?;
             }
-            BrowserAction::Click { point, .. } => {
-                page.click((*point).into()).await?;
+            BrowserAction::Click {
+                point: position, ..
+            } => {
+                page.click((*position).into()).await?;
             }
             BrowserAction::DoubleClick {
                 point,
@@ -285,5 +297,160 @@ impl BrowserAction {
             }
         };
         Ok(())
+    }
+}
+
+impl BrowserActionTemplate {
+    pub fn generate<Rng: rand::TryRng + rand::RngExt>(
+        &self,
+        rng: &mut Rng,
+    ) -> BrowserAction {
+        match self {
+            BrowserAction::Back => BrowserAction::Back,
+            BrowserAction::Forward => BrowserAction::Forward,
+            BrowserAction::Click { fingerprint, point } => {
+                BrowserAction::Click {
+                    fingerprint: fingerprint.clone(),
+                    point: point.generate(rng),
+                }
+            }
+            BrowserAction::DoubleClick {
+                fingerprint,
+                point,
+                delay_millis,
+            } => BrowserAction::DoubleClick {
+                fingerprint: fingerprint.clone(),
+                point: point.generate(rng),
+                delay_millis: rng.random_range(delay_millis.clone()),
+            },
+            BrowserAction::TypeText { text, delay_millis } => {
+                BrowserAction::TypeText {
+                    text: text.generate(rng),
+                    delay_millis: rng.random_range(delay_millis.clone()),
+                }
+            }
+            BrowserAction::PressKey { code } => {
+                BrowserAction::PressKey { code: *code }
+            }
+            BrowserAction::ScrollUp { origin, distance } => {
+                let distance = rng.random_range(distance.clone());
+                BrowserAction::ScrollUp {
+                    origin: origin.generate(rng),
+                    distance,
+                }
+            }
+            BrowserAction::ScrollDown { origin, distance } => {
+                let distance = rng.random_range(distance.clone());
+                BrowserAction::ScrollDown {
+                    origin: origin.generate(rng),
+                    distance,
+                }
+            }
+            BrowserAction::Reload => BrowserAction::Reload,
+            BrowserAction::Wait => BrowserAction::Wait,
+            BrowserAction::SetFileInputFiles { selector, files } => {
+                BrowserAction::SetFileInputFiles {
+                    selector: selector.clone(),
+                    files: files.clone(),
+                }
+            }
+            BrowserAction::MouseDrag {
+                from,
+                to,
+                steps,
+                delay_millis,
+            } => BrowserAction::MouseDrag {
+                from: from.generate(rng),
+                to: to.generate(rng),
+                steps: rng.random_range(steps.clone()),
+                delay_millis: rng.random_range(delay_millis.clone()),
+            },
+            BrowserAction::SetViewport { width, height } => {
+                BrowserAction::SetViewport {
+                    width: rng.random_range(width.clone()),
+                    height: rng.random_range(height.clone()),
+                }
+            }
+        }
+    }
+
+    pub fn accepts(&self, original: &BrowserAction) -> bool {
+        match (self, original) {
+            (BrowserAction::Back, BrowserAction::Back) => true,
+            (BrowserAction::Forward, BrowserAction::Forward) => true,
+            (
+                BrowserAction::Click {
+                    fingerprint: candidate_fingerprint,
+                    ..
+                },
+                BrowserAction::Click {
+                    fingerprint: original_fingerprint,
+                    ..
+                },
+            ) => candidate_fingerprint.matches(original_fingerprint),
+            (
+                BrowserAction::DoubleClick {
+                    fingerprint: candidate_fingerprint,
+                    ..
+                },
+                BrowserAction::DoubleClick {
+                    fingerprint: original_fingerprint,
+                    ..
+                },
+            ) => candidate_fingerprint.matches(original_fingerprint),
+            (
+                BrowserAction::TypeText {
+                    text: generator, ..
+                },
+                BrowserAction::TypeText { text: original, .. },
+            ) => generator.accepts(original),
+            (
+                BrowserAction::PressKey {
+                    code: code_candidate,
+                },
+                BrowserAction::PressKey {
+                    code: code_original,
+                },
+            ) => code_candidate == code_original,
+            (
+                BrowserAction::ScrollUp {
+                    origin: origin_candidate,
+                    distance: distance_candidate,
+                },
+                BrowserAction::ScrollUp {
+                    origin: origin_original,
+                    distance: distance_original,
+                },
+            ) => {
+                origin_candidate.accepts(origin_original)
+                    && distance_candidate.contains(distance_original)
+            }
+
+            (
+                BrowserAction::ScrollDown {
+                    origin: origin_candidate,
+                    distance: distance_candidate,
+                },
+                BrowserAction::ScrollDown {
+                    origin: origin_original,
+                    distance: distance_original,
+                },
+            ) => {
+                origin_candidate.accepts(origin_original)
+                    && distance_candidate.contains(distance_original)
+            }
+            (BrowserAction::Wait, BrowserAction::Wait) => true,
+            (
+                BrowserAction::SetFileInputFiles {
+                    selector: candidate_selector,
+                    ..
+                },
+                BrowserAction::SetFileInputFiles {
+                    selector: original_selector,
+                    ..
+                },
+            ) => candidate_selector == original_selector,
+            _ => false,
+        }
     }
 }

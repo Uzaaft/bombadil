@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::Result;
-use bombadil_schema::TerminalSize;
+use bombadil_schema::terminal::TerminalSize;
 use bytes::Bytes;
 use portable_pty::{
     Child, CommandBuilder, ExitStatus, MasterPty, NativePtySystem, PtySize,
@@ -81,6 +81,9 @@ impl PtyProcess {
     pub fn write(&mut self, input: &[u8]) {
         if let Err(error) = self.input_write.write_all(input) {
             log::warn!("PTY write error: {error}");
+        }
+        if let Err(error) = self.input_write.flush() {
+            log::warn!("PTY flush error: {error}");
         }
     }
 

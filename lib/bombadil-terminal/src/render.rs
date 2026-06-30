@@ -11,17 +11,6 @@ pub fn format_action(action: &TerminalAction) -> String {
                 styled::maybe_blue(format!("{:?}", text)),
             )
         }
-        TerminalAction::PressKey { code } => {
-            let rendered = char::from_u32(*code)
-                .map(|c| format!("{:?}", c))
-                .unwrap_or_else(|| format!("U+{:04X}", code));
-            format!(
-                "{} {} (code: {})",
-                styled::maybe_bold("Pressing".to_string()),
-                styled::maybe_blue(rendered),
-                styled::maybe_blue(format!("{code}")),
-            )
-        }
         TerminalAction::Resize { size } => {
             format!(
                 "{} (columns: {}, rows: {})",
@@ -35,6 +24,14 @@ pub fn format_action(action: &TerminalAction) -> String {
         }
         TerminalAction::ScrollDown {} => {
             styled::maybe_bold("Scrolling down".to_string())
+        }
+        TerminalAction::Click { row, column } => {
+            format!(
+                "{} at row {}, column {}",
+                styled::maybe_bold("Clicking".to_string()),
+                styled::maybe_blue(format!("{}", row)),
+                styled::maybe_blue(format!("{}", column)),
+            )
         }
     }
 }

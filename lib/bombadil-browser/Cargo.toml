@@ -23,6 +23,7 @@ oxc = { workspace = true, features = ["codegen", "semantic", "transformer"] }
 oxc_str.workspace = true
 oxc_traverse.workspace = true
 rand.workspace = true
+regex-syntax.workspace = true
 scraper.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

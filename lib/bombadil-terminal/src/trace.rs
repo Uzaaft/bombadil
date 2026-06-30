@@ -9,14 +9,12 @@ use anyhow::{Result, anyhow};
 use bombadil::runner::PropertyViolation;
 use bombadil::specification::convert::ToSchema;
 use bombadil::specification::domain::Snapshot;
-use bombadil_schema::{TerminalCell, TerminalGrid, Time, TraceEntry};
+use bombadil_schema::Time;
+use bombadil_schema::terminal::{TerminalCell, TerminalGrid};
 use serde_json as json;
 use std::fs::File;
 
 use crate::{driver::TerminalAction, state::TerminalState};
-
-pub type TerminalTraceEntry =
-    TraceEntry<TerminalAction, bombadil_schema::TerminalStateSummary>;
 
 /// Writes trace entries on a dedicated thread so that JSON
 /// serialization and disk I/O (hundreds of kilobytes per state) overlap
@@ -233,73 +231,105 @@ fn worker_loop(
 mod tests {
     use std::time::SystemTime;
 
-    use bombadil_schema::{
+    use bombadil_schema::terminal::{
         TerminalAttributes, TerminalColor, TerminalCursor,
         TerminalCursorPosition, TerminalCursorVisualStyle, TerminalSize,
-        TerminalStateSummary, TerminalStyle, TerminalUnderline,
+        TerminalStateSummary, TerminalStyle, TerminalTraceEntry,
+        TerminalUnderline,
     };
+    use hegel::Generator;
+    use hegel::TestCase;
+    use hegel::generators::{booleans, integers, just, one_of, text, vecs};
     use small_string::SmallString;
-
-    use serde::Serialize;
 
     use super::*;
 
-    /// The reference layout this writer must stay byte-compatible with.
-    #[derive(Serialize)]
-    struct DerivedEntry<'a> {
-        timestamp: Time,
-        action: Option<&'a TerminalAction>,
-        state: TerminalStateSummary,
-        snapshots: Vec<bombadil_schema::Snapshot>,
-        violations: Vec<bombadil_schema::PropertyViolation>,
+    #[hegel::composite]
+    fn generate_color(tc: TestCase) -> TerminalColor {
+        tc.draw(one_of([
+            just(TerminalColor::None).boxed(),
+            just(TerminalColor::Palette(tc.draw(integers()))).boxed(),
+            just(TerminalColor::RGB {
+                r: tc.draw(integers()),
+                g: tc.draw(integers()),
+                b: tc.draw(integers()),
+            })
+            .boxed(),
+        ]))
     }
 
-    #[test]
-    fn write_entry_matches_derived_serde_output() {
-        let size = TerminalSize {
-            columns: 3,
-            rows: 2,
-        };
-        let style = TerminalStyle {
-            foreground_color: TerminalColor::Palette(3),
-            background_color: TerminalColor::RGB { r: 1, g: 2, b: 3 },
-            underline_color: TerminalColor::None,
-            underline: TerminalUnderline::Curly,
-            attributes: TerminalAttributes::BOLD,
-        };
-        let cells = vec![
-            TerminalCell::Occupied {
-                contents: SmallString::from(['a'].as_slice()),
-                wide: false,
+    #[hegel::composite]
+    fn generate_underline(tc: TestCase) -> TerminalUnderline {
+        tc.draw(one_of([
+            just(TerminalUnderline::None).boxed(),
+            just(TerminalUnderline::Single).boxed(),
+            just(TerminalUnderline::Double).boxed(),
+            just(TerminalUnderline::Curly).boxed(),
+            just(TerminalUnderline::Dotted).boxed(),
+            just(TerminalUnderline::Dashed).boxed(),
+        ]))
+    }
+
+    #[hegel::composite]
+    fn generate_style(tc: TestCase) -> TerminalStyle {
+        TerminalStyle {
+            foreground_color: tc.draw(generate_color()),
+            background_color: tc.draw(generate_color()),
+            underline_color: tc.draw(generate_color()),
+            underline: tc.draw(generate_underline()),
+            attributes: TerminalAttributes(tc.draw(integers())),
+        }
+    }
+
+    #[hegel::composite]
+    fn generate_cell(tc: TestCase) -> TerminalCell {
+        let style = tc.draw(generate_style());
+
+        tc.draw(one_of([
+            just(TerminalCell::Occupied {
+                contents: SmallString::from(tc.draw(text().max_size(1))),
+                wide: tc.draw(booleans()),
                 style: style.clone(),
-            },
-            TerminalCell::Empty {
-                style: TerminalStyle::default(),
-            },
-            TerminalCell::Empty {
-                style: TerminalStyle::default(),
-            },
-            TerminalCell::Continuation { style },
-            TerminalCell::Empty {
-                style: TerminalStyle::default(),
-            },
-            TerminalCell::Occupied {
-                contents: SmallString::from(['"', 'x', '\\'].as_slice()),
-                wide: true,
-                style: TerminalStyle::default(),
-            },
-        ];
+            })
+            .boxed(),
+            just(TerminalCell::Continuation {
+                style: style.clone(),
+            })
+            .boxed(),
+            just(TerminalCell::Empty {
+                style: style.clone(),
+            })
+            .boxed(),
+        ]))
+    }
+
+    #[hegel::test(test_cases = 10)]
+    fn test_matches_builtin(tc: TestCase) {
+        let size = TerminalSize {
+            columns: tc.draw(integers().min_value(1).max_value(10)),
+            rows: tc.draw(integers().min_value(1).max_value(10)),
+        };
+        let cells = tc.draw(
+            vecs(generate_cell())
+                .min_size(size.cell_count() as usize)
+                .max_size(size.cell_count() as usize),
+        );
+        let scrollback_rows = tc.draw(integers());
         let state = TerminalState {
             timestamp: SystemTime::now(),
             grid: TerminalGrid::from_cells(size, cells),
             scrollback: TerminalGrid::with_size(TerminalSize {
-                rows: 0,
+                rows: scrollback_rows,
                 ..size
             }),
-            scroll_offset: 7,
+            scroll_offset: tc.draw(integers().max_value(scrollback_rows))
+                as u32,
             cursor: TerminalCursor {
-                position: TerminalCursorPosition { column: 1, row: 2 },
-                visible: true,
+                position: TerminalCursorPosition {
+                    column: tc.draw(integers().max_value(size.columns)),
+                    row: tc.draw(integers().max_value(size.rows)),
+                },
+                visible: tc.draw(booleans()),
                 blinking: false,
                 visual_style: TerminalCursorVisualStyle::Block,
                 color: TerminalColor::None,
@@ -316,9 +346,9 @@ mod tests {
         write_entry(&mut buffer, timestamp, Some(&action), &state, &[], &[])
             .expect("manual serialization failed");
 
-        let derived = json::to_string(&DerivedEntry {
+        let derived = json::to_string(&TerminalTraceEntry {
             timestamp,
-            action: Some(&action),
+            action: Some(action.to_schema()),
             state: TerminalStateSummary {
                 grid: state.grid.clone(),
                 scrollback: state.scrollback.clone(),
