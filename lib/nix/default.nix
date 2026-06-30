@@ -125,6 +125,17 @@ let
   };
   cargoArtifacts = craneLib.buildDepsOnly depsArgs;
   cargoArtifactsStatic = craneLibStatic.buildDepsOnly depsArgs;
+
+  testPreCheck = ''
+    export FONTCONFIG_FILE=${makeFontsConf { fontDirectories = [ freefont_ttf ]; }}
+    export HOME=$(mktemp -d)
+    mkdir -p $HOME/.cache $HOME/.config $HOME/.local $HOME/.pki
+    mkdir -p $HOME/.config/google-chrome/Crashpad
+    export XDG_CONFIG_HOME=$HOME/.config
+    export XDG_CACHE_HOME=$HOME/.cache
+    export INSTA_WORKSPACE_ROOT=$(pwd)
+    export INSTA_UPDATE=no
+  '';
 in
 {
   bin = (if stdenv.isLinux then craneLibStatic else craneLib).buildPackage (
@@ -162,22 +173,24 @@ in
 
   npm-package = callPackage ./npm-package.nix { inherit src; };
 
-  tests = craneLib.cargoTest (
+  tests-unit = craneLib.cargoTest (
+    commonArgs
+    // {
+      inherit cargoArtifacts;
+      pname = "bombadil-tests-unit";
+      cargoExtraArgs = "--workspace --exclude bombadil-inspect --exclude bombadil-browser-integration-tests";
+      preCheck = testPreCheck;
+    }
+  );
+
+  tests-browser = craneLib.cargoTest (
     commonArgs
     // {
       inherit cargoArtifacts;
       nativeCheckInputs = [ chromium ];
-      pname = "bombadil";
-      preCheck = ''
-        export FONTCONFIG_FILE=${makeFontsConf { fontDirectories = [ freefont_ttf ]; }}
-        export HOME=$(mktemp -d)
-          mkdir -p $HOME/.cache $HOME/.config $HOME/.local $HOME/.pki
-          mkdir -p $HOME/.config/google-chrome/Crashpad
-          export XDG_CONFIG_HOME=$HOME/.config
-          export XDG_CACHE_HOME=$HOME/.cache
-          export INSTA_WORKSPACE_ROOT=$(pwd)
-          export INSTA_UPDATE=no
-      '';
+      pname = "bombadil-tests-browser";
+      cargoExtraArgs = "-p bombadil-browser-integration-tests";
+      preCheck = testPreCheck;
     }
   );
 

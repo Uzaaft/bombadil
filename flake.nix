@@ -37,21 +37,24 @@
           targets = [ "wasm32-unknown-unknown" ];
         };
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchainWasm;
-        craneLibStatic = (crane.mkLib pkgs.pkgsCross.musl64).overrideToolchain (
+        # Per-host musl cross targets so each native runner (x86_64-linux,
+        # aarch64-linux) builds its own static binary without cross-compiling.
+        muslCrossPkgs =
+          if pkgs.stdenv.hostPlatform.isAarch64 then
+            pkgs.pkgsCross.aarch64-multiplatform-musl
+          else
+            pkgs.pkgsCross.musl64;
+        muslTarget =
+          if pkgs.stdenv.hostPlatform.isAarch64 then
+            "aarch64-unknown-linux-musl"
+          else
+            "x86_64-unknown-linux-musl";
+        craneLibStatic = (crane.mkLib muslCrossPkgs).overrideToolchain (
           p:
           p.rust-bin.stable.latest.default.override {
             targets = [
               "wasm32-unknown-unknown"
-              "x86_64-unknown-linux-musl"
-            ];
-          }
-        );
-        craneLibAarch64 = (crane.mkLib pkgs.pkgsCross.aarch64-multiplatform-musl).overrideToolchain (
-          p:
-          p.rust-bin.stable.latest.default.override {
-            targets = [
-              "wasm32-unknown-unknown"
-              "aarch64-unknown-linux-musl"
+              muslTarget
             ];
           }
         );
@@ -66,11 +69,7 @@
         };
         bombadil = pkgs.callPackage ./lib/nix/default.nix {
           inherit craneLib craneLibStatic ghosttySrc;
-        };
-        bombadilAarch64 = pkgs.callPackage ./lib/nix/default.nix {
-          inherit craneLib ghosttySrc;
-          craneLibStatic = craneLibAarch64;
-          cargoTarget = "aarch64-unknown-linux-musl";
+          cargoTarget = muslTarget;
         };
       in
       {
@@ -81,7 +80,6 @@
           release = pkgs.callPackage ./lib/release/default.nix { };
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
-          aarch64-linux = bombadilAarch64.bin;
           docker = pkgs.callPackage ./lib/nix/docker.nix { bombadil = self.packages.${system}.default; };
         };
 
@@ -97,7 +95,7 @@
           inherit (bombadil) clippy fmt npm-package;
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
-          inherit (bombadil) tests;
+          inherit (bombadil) tests-unit tests-browser;
         };
 
         devShells = {

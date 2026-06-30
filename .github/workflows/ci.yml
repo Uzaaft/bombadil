@@ -44,36 +44,111 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-  build:
-    name: Build (${{ matrix.target }})
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-linux
-          - os: ubuntu-latest
-            target: aarch64-linux
-            package: aarch64-linux
-          - os: macos-latest
-            target: aarch64-darwin
-    runs-on: ${{ matrix.os }}
+  build-x86_64-linux:
+    name: Build (x86_64-linux)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-nix
         with:
-          scope: build-${{ matrix.target }}
+          scope: build-x86_64-linux
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - run: nix flake check .
       - name: Build package
-        run: nix build .#${{ matrix.package || 'default' }}
+        run: nix build .#default
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: bombadil-${{ matrix.target }}
+          name: bombadil-x86_64-linux
           path: result/bin/bombadil
-      - name: Build Docker image
-        if: matrix.target == 'x86_64-linux'
-        run: nix build ".#docker"
+
+  build-aarch64-linux:
+    name: Build (aarch64-linux)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-nix
+        with:
+          scope: build-aarch64-linux
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Build package
+        run: nix build .#default
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: bombadil-aarch64-linux
+          path: result/bin/bombadil
+
+  build-aarch64-darwin:
+    name: Build (aarch64-darwin)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-nix
+        with:
+          scope: build-aarch64-darwin
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Build package
+        run: nix build .#default
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: bombadil-aarch64-darwin
+          path: result/bin/bombadil
+
+  build-docker:
+    name: Build Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-nix
+        with:
+          scope: docker
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - run: nix build .#docker
+
+  check-fmt:
+    name: Check (fmt)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-nix
+        with:
+          scope: check-fmt
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - run: nix build .#checks.x86_64-linux.fmt
+
+  check-clippy:
+    name: Check (clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-nix
+        with:
+          scope: check-clippy
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - run: nix build .#checks.x86_64-linux.clippy
+
+  check-tests-unit:
+    name: Check (tests, unit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-nix
+        with:
+          scope: check-tests-unit
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - run: nix build .#checks.x86_64-linux.tests-unit
+
+  check-tests-browser:
+    name: Check (tests, browser)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-nix
+        with:
+          scope: check-tests-browser
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - run: nix build .#checks.x86_64-linux.tests-browser
 
   build-npm-package:
     runs-on: ubuntu-latest
@@ -122,7 +197,7 @@ jobs:
 
   inspect-test:
     name: Inspect UI test
-    needs: build
+    needs: build-x86_64-linux
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -143,18 +218,19 @@ jobs:
             --exit-on-violation \
             --time-limit 30s || true
       - name: Test inspect UI
+        env:
+          TIME_LIMIT: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && '1m' || '20s' }}
         run: |
           ./bombadil browser inspect report --no-open --port 1073 &
           for i in $(seq 1 30); do
             if curl -sf http://localhost:1073 > /dev/null 2>&1; then break; fi
             sleep 1
           done
-          export RUST_LOG=debug
           ./bombadil browser test \
             --headless --no-sandbox \
             --instrument-javascript="" \
             --output-path inspect-test-output \
-            --time-limit 1m \
+            --time-limit "$TIME_LIMIT" \
             http://localhost:1073 \
             lib/bombadil-inspect/test/inspect.spec.ts
       - name: Upload inspect test output
@@ -166,13 +242,14 @@ jobs:
 
   smoke-test:
     name: Smoke test (${{ matrix.os }})
-    needs: build
+    needs: [build-x86_64-linux, build-aarch64-darwin]
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             artifact: bombadil-x86_64-linux
-          - os: macos-latest
+          - os: macos-15
             artifact: bombadil-aarch64-darwin
     runs-on: ${{ matrix.os }}
     steps:
@@ -180,23 +257,33 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-      - name: Test binary runs without Nix
+      - name: Test binary runs
         run: |
           chmod +x bombadil
           ./bombadil --version
       - name: Test terminal subcommand
-        run: ./bombadil terminal test --specification lib/bombadil-terminal/examples/cat.ts head -n 100
+        run: |
+          ./bombadil terminal test \
+            --specification lib/bombadil-terminal/examples/cat.ts \
+            --output-path terminal-test-output \
+            head -n 100
+      - name: Upload terminal test output
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terminal-test-output-${{ matrix.os }}
+          path: terminal-test-output/
 
   test-npm-package:
     name: Test npm package (${{ matrix.os }})
-    needs: [build, build-npm-package]
+    needs: [build-x86_64-linux, build-aarch64-darwin, build-npm-package]
     strategy:
       matrix:
         include:
           - os: ubuntu-latest
             artifact: bombadil-x86_64-linux
             binary: bombadil-linux-x64
-          - os: macos-latest
+          - os: macos-15
             artifact: bombadil-aarch64-darwin
             binary: bombadil-darwin-arm64
     runs-on: ${{ matrix.os }}
@@ -227,7 +314,13 @@ jobs:
     needs:
       [
         check-version,
-        build,
+        check-fmt,
+        check-clippy,
+        check-tests-unit,
+        check-tests-browser,
+        build-x86_64-linux,
+        build-aarch64-linux,
+        build-aarch64-darwin,
         build-npm-package,
         build-manual,
         smoke-test,
@@ -258,7 +351,15 @@ jobs:
 
   publish-npm:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [check-version, build, build-npm-package, release]
+    needs:
+      [
+        check-version,
+        build-x86_64-linux,
+        build-aarch64-linux,
+        build-aarch64-darwin,
+        build-npm-package,
+        release,
+      ]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -275,7 +376,7 @@ jobs:
         run: |
           mkdir -p pkg/binaries
           cp artifacts/bombadil-x86_64-linux/bombadil  pkg/binaries/bombadil-linux-x64
-          cp artifacts/bombadil-aarch64-linux/bombadil  pkg/binaries/bombadil-linux-arm64
+          cp artifacts/bombadil-aarch64-linux/bombadil pkg/binaries/bombadil-linux-arm64
           cp artifacts/bombadil-aarch64-darwin/bombadil pkg/binaries/bombadil-darwin-arm64
           chmod +x pkg/binaries/*
       - name: Publish to npm
@@ -313,3 +414,25 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+  all-checks-passed:
+    if: always()
+    needs:
+      - build-x86_64-linux
+      - build-aarch64-linux
+      - build-aarch64-darwin
+      - build-docker
+      - check-fmt
+      - check-clippy
+      - check-tests-unit
+      - check-tests-browser
+      - build-npm-package
+      - build-manual
+      - inspect-test
+      - smoke-test
+      - test-npm-package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check all jobs passed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
