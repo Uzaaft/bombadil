@@ -440,6 +440,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "url",
+ "willow-tree",
 ]
 
 [[package]]
@@ -544,6 +545,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "willow-tree",
  "yew",
 ]
 
@@ -565,6 +567,7 @@ dependencies = [
  "serde",
  "serde_json",
  "small-string",
+ "willow-tree",
 ]
 
 [[package]]
@@ -4990,6 +4993,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81995fafaaaf6ae47a7d0cc83c67caf92aeb7e5331650ae6ff856f7c0c60c459"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "willow-tree"
+version = "0.6.1"
+dependencies = [
+ "hegeltest",
 ]
 
 [[package]]
