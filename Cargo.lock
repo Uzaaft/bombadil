@@ -456,6 +456,7 @@ dependencies = [
  "chromiumoxide",
  "const_format",
  "futures",
+ "hegeltest",
  "html5ever",
  "indoc",
  "insta",
