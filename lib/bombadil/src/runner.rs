@@ -7,6 +7,7 @@ use bombadil_schema::Time;
 use serde::Serialize;
 use serde_json::json;
 
+use crate::antithesis;
 use crate::driver::{DriverEvent, InterfaceDriver};
 use crate::specification::convert::{
     ToSchema, violation_with_pretty_functions,
@@ -92,6 +93,13 @@ impl<D: InterfaceDriver> Runner<D> {
 
         loop {
             let event = driver.next_event();
+
+            if antithesis::is_in_guest() {
+                // This lets the Antithesis fuzzer know of a new state in our loop,
+                // so that it can fork and change the entropy to explore the SUT.
+                antithesis_fuzzer::mark_state_boundary();
+            }
+
             match event {
                 Some(DriverEvent::StateChanged(state)) => {
                     let snapshots: Arc<[Snapshot]> = driver
