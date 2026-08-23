@@ -8,6 +8,7 @@ antithesis_sdk.workspace = true
 anyhow.workspace = true
 boa_engine.workspace = true
 bombadil = { path = "../bombadil" }
+bombadil-driver-plugin = { path = "../bombadil-driver-plugin" }
 bombadil-schema = { path = "../bombadil-schema" }
 bytes.workspace = true
 hotpath.workspace = true

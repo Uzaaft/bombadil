@@ -23,6 +23,7 @@ use crate::trace::TraceWriter;
 pub mod driver;
 pub mod extractors;
 pub mod js;
+pub mod plugin;
 pub mod pty;
 pub mod render;
 pub mod state;

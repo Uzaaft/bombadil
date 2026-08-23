@@ -467,6 +467,7 @@ dependencies = [
  "base64",
  "bombadil",
  "bombadil-browser-keys",
+ "bombadil-driver-plugin",
  "bombadil-ltl",
  "bombadil-schema",
  "chromiumoxide",
@@ -528,6 +529,7 @@ dependencies = [
  "bombadil",
  "bombadil-browser",
  "bombadil-browser-keys",
+ "bombadil-driver-plugin",
  "bombadil-ltl",
  "bombadil-schema",
  "bombadil-terminal",
@@ -545,6 +547,16 @@ dependencies = [
  "tempfile",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "bombadil-driver-plugin"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "inventory",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -595,6 +607,7 @@ dependencies = [
  "anyhow",
  "boa_engine",
  "bombadil",
+ "bombadil-driver-plugin",
  "bombadil-schema",
  "bytes",
  "env_logger",
@@ -2368,6 +2381,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec0375b6b871e424e9e052e1107d57dc6952f77ff882bd4bf74333a833779bab"
 dependencies = [
  "memoffset",
+]
+
+[[package]]
+name = "inventory"
+version = "0.3.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4f0c30c76f2f4ccee3fe55a2435f691ca00c0e4bd87abe4f4a851b1d4dac39b"
+dependencies = [
+ "rustversion",
 ]
 
 [[package]]

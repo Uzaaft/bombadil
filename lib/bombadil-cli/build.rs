@@ -2,6 +2,10 @@ use std::fs;
 use std::path::Path;
 use std::process::Stdio;
 
+use bombadil_driver_plugin::{DriverRegistration, render_typescript};
+
+include!("driver_set.rs");
+
 fn main() {
     let dist_directory = Path::new("../../target/inspect");
 
@@ -11,10 +15,30 @@ fn main() {
     println!("cargo:rerun-if-changed=../bombadil-inspect/Trunk.toml");
 
     build_inspect(dist_directory);
+    build_driver_types();
+}
+
+fn build_driver_types() {
+    println!("cargo:rerun-if-changed=driver_set.rs");
+    let drivers: &[DriverRegistration] = builtin_drivers!();
+    let declarations = render_typescript(drivers.iter().copied())
+        .expect("failed to render built-in driver TypeScript schemas");
+    let output = std::path::PathBuf::from(
+        std::env::var_os("OUT_DIR").expect("OUT_DIR is not set"),
+    )
+    .join("bombadil-driver-types.d.ts");
+    fs::write(output, declarations)
+        .expect("failed to write built-in driver TypeScript schemas");
 }
 
 fn build_inspect(dist_directory: &Path) {
     let inspect_directory = Path::new("../bombadil-inspect");
+
+    println!("cargo:rerun-if-env-changed=BOMBADIL_SKIP_INSPECT_BUILD");
+    if std::env::var_os("BOMBADIL_SKIP_INSPECT_BUILD").is_some() {
+        ensure_placeholder(dist_directory);
+        return;
+    }
 
     if !inspect_directory.join("Cargo.toml").exists() {
         ensure_placeholder(dist_directory);

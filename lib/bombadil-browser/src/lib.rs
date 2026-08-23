@@ -5,6 +5,7 @@ pub mod driver;
 pub mod geometry;
 pub mod instrumentation;
 pub mod js_action;
+pub mod plugin;
 pub mod render;
 pub mod runner;
 pub mod strategy;

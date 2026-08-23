@@ -15,6 +15,7 @@ bombadil = { path = "../bombadil" }
 bombadil-browser = { path = "../bombadil-browser" }
 bombadil-ltl = { path = "../bombadil-ltl" }
 bombadil-browser-keys = { path = "../bombadil-browser-keys" }
+bombadil-driver-plugin = { path = "../bombadil-driver-plugin" }
 bombadil-schema = { path = "../bombadil-schema" }
 bombadil-terminal = { path = "../bombadil-terminal", optional = true }
 clap = { workspace = true, features = ["derive"] }
@@ -33,6 +34,11 @@ url = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 hegeltest.workspace = true
+
+[build-dependencies]
+bombadil-browser = { path = "../bombadil-browser" }
+bombadil-driver-plugin = { path = "../bombadil-driver-plugin" }
+bombadil-terminal = { path = "../bombadil-terminal", optional = true }
 
 [features]
 default = ["terminal"]
