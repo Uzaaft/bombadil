@@ -1,9 +1,12 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use bombadil_driver_plugin::{
-    Driver, DriverOverride, DriverRegistration, DriverRegistry, DriverSchema,
-    render_typescript,
+    Driver, DriverEvent, DriverOverride, DriverRegistration, DriverRegistry,
+    DriverSchema, RunningDriverEvent, render_typescript,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 struct Terminal;
 
@@ -27,15 +30,15 @@ impl Driver for Terminal {
         Ok(Self)
     }
 
-    fn observe(&mut self) -> Result<State> {
-        Ok(State)
+    fn next_event(&mut self) -> Option<DriverEvent<State>> {
+        Some(DriverEvent::StateChanged(Arc::new(State)))
     }
 
-    fn actions(&mut self) -> Result<Vec<Action>> {
+    fn actions(&self, _: &State) -> Result<Vec<Action>> {
         Ok(vec![])
     }
 
-    fn apply(&mut self, _: Action) -> Result<()> {
+    fn apply(&mut self, _: Action, _: Arc<State>) -> Result<()> {
         Ok(())
     }
 
@@ -52,6 +55,22 @@ const BUILTIN: DriverRegistration =
     DriverRegistration::of::<Terminal>("bombadil-terminal");
 const EXTERNAL: DriverRegistration =
     DriverRegistration::of::<Terminal>("acme-terminal");
+
+#[test]
+fn erased_session_preserves_the_event_and_state_contract() {
+    let mut session = BUILTIN.launch(json!(null)).unwrap();
+    let state = match session.next_event() {
+        Some(RunningDriverEvent::StateChanged(state)) => state,
+        Some(RunningDriverEvent::Error(error)) => {
+            panic!("unexpected driver error: {error}")
+        }
+        None => panic!("driver closed before emitting a state"),
+    };
+
+    assert_eq!(state.value(), &Value::Null);
+    assert!(session.actions(&state).unwrap().is_empty());
+    session.apply(Value::Null, &state).unwrap();
+}
 
 #[test]
 fn collisions_fail_without_an_override() {

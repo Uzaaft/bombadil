@@ -7,12 +7,20 @@
 
 use std::any::Any;
 use std::collections::{BTreeMap, btree_map::Entry};
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 pub use inventory;
+
+/// An event emitted by a running driver.
+#[derive(Debug, Clone)]
+pub enum DriverEvent<S> {
+    StateChanged(Arc<S>),
+    Error(Arc<anyhow::Error>),
+}
 
 /// A running Bombadil driver session.
 pub trait Driver: Sized + 'static {
@@ -25,14 +33,21 @@ pub trait Driver: Sized + 'static {
     /// Launch the system under test and return its running session.
     fn launch(config: Self::Config) -> Result<Self>;
 
-    /// Observe the current state. The value must match [`Self::schema`].
-    fn observe(&mut self) -> Result<Self::State>;
+    /// Wait for and consume the next driver event.
+    ///
+    /// `None` means the event stream has closed. A state value must serialize
+    /// according to [`Self::schema`].
+    fn next_event(&mut self) -> Option<DriverEvent<Self::State>>;
 
-    /// List actions which are currently valid.
-    fn actions(&mut self) -> Result<Vec<Self::Action>>;
+    /// List actions which are valid for `state`.
+    fn actions(&self, state: &Self::State) -> Result<Vec<Self::Action>>;
 
     /// Apply one action previously returned by [`Self::actions`].
-    fn apply(&mut self, action: Self::Action) -> Result<()>;
+    fn apply(
+        &mut self,
+        action: Self::Action,
+        state: Arc<Self::State>,
+    ) -> Result<()>;
 
     /// Describe the state and action types exported to TypeScript.
     fn schema() -> DriverSchema;
@@ -95,22 +110,45 @@ inventory::collect!(DriverRegistration);
 /// contract plugin authors implement is [`Driver`].
 pub struct RunningDriver {
     inner: Box<dyn Any>,
-    observe: fn(&mut dyn Any) -> Result<Value>,
-    actions: fn(&mut dyn Any) -> Result<Vec<Value>>,
-    apply: fn(&mut dyn Any, Value) -> Result<()>,
+    next_event: fn(&mut dyn Any) -> Option<RunningDriverEvent>,
+    actions: fn(&dyn Any, &dyn Any) -> Result<Vec<Value>>,
+    apply: fn(&mut dyn Any, Value, &dyn Any) -> Result<()>,
 }
 
 impl RunningDriver {
-    pub fn observe(&mut self) -> Result<Value> {
-        (self.observe)(self.inner.as_mut())
+    pub fn next_event(&mut self) -> Option<RunningDriverEvent> {
+        (self.next_event)(self.inner.as_mut())
     }
 
-    pub fn actions(&mut self) -> Result<Vec<Value>> {
-        (self.actions)(self.inner.as_mut())
+    pub fn actions(&self, state: &RunningDriverState) -> Result<Vec<Value>> {
+        (self.actions)(self.inner.as_ref(), state.inner.as_ref())
     }
 
-    pub fn apply(&mut self, action: Value) -> Result<()> {
-        (self.apply)(self.inner.as_mut(), action)
+    pub fn apply(
+        &mut self,
+        action: Value,
+        state: &RunningDriverState,
+    ) -> Result<()> {
+        (self.apply)(self.inner.as_mut(), action, state.inner.as_ref())
+    }
+}
+
+/// A type-erased event emitted by [`RunningDriver`].
+pub enum RunningDriverEvent {
+    StateChanged(RunningDriverState),
+    Error(Arc<anyhow::Error>),
+}
+
+/// A serialized state which retains its concrete value for `actions` and
+/// `apply` calls.
+pub struct RunningDriverState {
+    inner: Box<dyn Any>,
+    value: Value,
+}
+
+impl RunningDriverState {
+    pub fn value(&self) -> &Value {
+        &self.value
     }
 }
 
@@ -120,21 +158,42 @@ fn launch<D: Driver>(config: Value) -> Result<RunningDriver> {
     let session = D::launch(config)?;
     Ok(RunningDriver {
         inner: Box::new(session),
-        observe: observe::<D>,
+        next_event: next_event::<D>,
         actions: actions::<D>,
         apply: apply::<D>,
     })
 }
 
-fn observe<D: Driver>(session: &mut dyn Any) -> Result<Value> {
-    let state = concrete::<D>(session)?.observe()?;
-    serde_json::to_value(state)
-        .context("driver returned an unserializable state")
+fn next_event<D: Driver>(session: &mut dyn Any) -> Option<RunningDriverEvent> {
+    let driver = match concrete::<D>(session) {
+        Ok(driver) => driver,
+        Err(error) => return Some(RunningDriverEvent::Error(Arc::new(error))),
+    };
+    Some(match driver.next_event()? {
+        DriverEvent::StateChanged(state) => {
+            match serde_json::to_value(state.as_ref()) {
+                Ok(value) => {
+                    RunningDriverEvent::StateChanged(RunningDriverState {
+                        inner: Box::new(state),
+                        value,
+                    })
+                }
+                Err(error) => RunningDriverEvent::Error(Arc::new(
+                    anyhow::Error::new(error)
+                        .context("driver returned an unserializable state"),
+                )),
+            }
+        }
+        DriverEvent::Error(error) => RunningDriverEvent::Error(error),
+    })
 }
 
-fn actions<D: Driver>(session: &mut dyn Any) -> Result<Vec<Value>> {
-    concrete::<D>(session)?
-        .actions()?
+fn actions<D: Driver>(
+    session: &dyn Any,
+    state: &dyn Any,
+) -> Result<Vec<Value>> {
+    concrete_ref::<D>(session)?
+        .actions(concrete_state::<D>(state)?.as_ref())?
         .into_iter()
         .map(|action| {
             serde_json::to_value(action)
@@ -143,16 +202,33 @@ fn actions<D: Driver>(session: &mut dyn Any) -> Result<Vec<Value>> {
         .collect()
 }
 
-fn apply<D: Driver>(session: &mut dyn Any, action: Value) -> Result<()> {
+fn apply<D: Driver>(
+    session: &mut dyn Any,
+    action: Value,
+    state: &dyn Any,
+) -> Result<()> {
     let action = serde_json::from_value(action)
         .context("action does not match driver schema")?;
-    concrete::<D>(session)?.apply(action)
+    let state = Arc::clone(concrete_state::<D>(state)?);
+    concrete::<D>(session)?.apply(action, state)
 }
 
 fn concrete<D: Driver>(session: &mut dyn Any) -> Result<&mut D> {
     session
         .downcast_mut()
         .context("driver registration/session type mismatch")
+}
+
+fn concrete_ref<D: Driver>(session: &dyn Any) -> Result<&D> {
+    session
+        .downcast_ref()
+        .context("driver registration/session type mismatch")
+}
+
+fn concrete_state<D: Driver>(state: &dyn Any) -> Result<&Arc<D::State>> {
+    state
+        .downcast_ref()
+        .context("driver registration/state type mismatch")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

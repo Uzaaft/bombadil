@@ -6,6 +6,8 @@ use anyhow::Result;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json as json;
 
+pub use bombadil_driver_plugin::DriverEvent;
+
 use crate::specification::domain::Snapshot;
 
 /// Convert a JSON value produced by a specification's action generator
@@ -50,10 +52,4 @@ pub trait InterfaceDriver {
     ) -> Result<Vec<Snapshot>>;
 
     fn state_timestamp(state: &Self::State) -> SystemTime;
-}
-
-#[derive(Debug, Clone)]
-pub enum DriverEvent<S> {
-    StateChanged(Arc<S>),
-    Error(Arc<anyhow::Error>),
 }

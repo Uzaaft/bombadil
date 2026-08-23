@@ -6,9 +6,10 @@ mod output_path;
 mod terminal;
 
 use antithesis_sdk::antithesis_init;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use bombadil_driver_plugin::{
-    DriverOverride, DriverRegistration, DriverRegistry, render_typescript,
+    DriverOverride, DriverRegistration, DriverRegistry, RunningDriverEvent,
+    render_typescript,
 };
 use clap::Parser;
 
@@ -54,14 +55,14 @@ enum DriversCommand {
     List,
     /// Print generated TypeScript state/action declarations.
     Typescript,
-    /// Launch a driver and perform one observe/actions/apply cycle.
+    /// Launch a driver and perform one next-event/actions/apply cycle.
     Probe {
         /// Registered driver name.
         name: String,
         /// Driver-specific configuration as JSON.
         #[arg(long, default_value = "{}")]
         config: String,
-        /// Optional action JSON. When omitted, probe only observes/lists.
+        /// Optional action JSON. When omitted, probe only receives/lists.
         #[arg(long)]
         apply: Option<String>,
     },
@@ -127,15 +128,27 @@ fn run_driver_command(
             let config = serde_json::from_str(&config)
                 .context("--config must be valid JSON")?;
             let mut session = registration.launch(config)?;
-            println!("state: {}", session.observe()?);
+            let state = match session.next_event() {
+                Some(RunningDriverEvent::StateChanged(state)) => state,
+                Some(RunningDriverEvent::Error(error)) => {
+                    return Err(anyhow!(error.to_string()));
+                }
+                None => {
+                    return Err(anyhow!(
+                        "driver `{name}` closed before emitting a state"
+                    ));
+                }
+            };
+            println!("state: {}", state.value());
             println!(
                 "actions: {}",
-                serde_json::to_string(&session.actions()?)?
+                serde_json::to_string(&session.actions(&state)?)?
             );
             if let Some(action) = apply {
                 session.apply(
                     serde_json::from_str(&action)
                         .context("--apply must be valid JSON")?,
+                    &state,
                 )?;
             }
             Ok(())

@@ -46,6 +46,8 @@ pub enum BrowserTarget {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserPluginState {
+    #[serde(skip)]
+    driver_state: Arc<BrowserState>,
     pub url: String,
     pub title: String,
     pub navigation_history: crate::browser::state::NavigationHistory,
@@ -54,7 +56,6 @@ pub struct BrowserPluginState {
 
 pub struct BrowserPluginDriver {
     driver: Option<BrowserDriver>,
-    state: Option<Arc<BrowserState>>,
     _runtime_directory: TempDir,
 }
 
@@ -108,34 +109,33 @@ impl Driver for BrowserPluginDriver {
         driver.initiate()?;
         Ok(Self {
             driver: Some(driver),
-            state: None,
             _runtime_directory: runtime_directory,
         })
     }
 
-    fn observe(&mut self) -> Result<BrowserPluginState> {
-        let state = match self.driver_mut()?.next_event() {
-            Some(DriverEvent::StateChanged(state)) => state,
-            Some(DriverEvent::Error(error)) => {
-                return Err(anyhow!(error.to_string()));
+    fn next_event(&mut self) -> Option<DriverEvent<BrowserPluginState>> {
+        let event = match self.driver_mut() {
+            Ok(driver) => driver.next_event()?,
+            Err(error) => return Some(DriverEvent::Error(Arc::new(error))),
+        };
+        Some(match event {
+            DriverEvent::StateChanged(state) => {
+                DriverEvent::StateChanged(Arc::new(BrowserPluginState {
+                    driver_state: Arc::clone(&state),
+                    url: state.url.to_string(),
+                    title: state.title.clone(),
+                    navigation_history: state.navigation_history.clone(),
+                    resources: state.resources.to_schema(),
+                }))
             }
-            None => return Err(anyhow!("browser driver closed")),
-        };
-        let result = BrowserPluginState {
-            url: state.url.to_string(),
-            title: state.title.clone(),
-            navigation_history: state.navigation_history.clone(),
-            resources: state.resources.to_schema(),
-        };
-        self.state = Some(state);
-        Ok(result)
+            DriverEvent::Error(error) => DriverEvent::Error(error),
+        })
     }
 
-    fn actions(&mut self) -> Result<Vec<BrowserAction>> {
-        let state = self
-            .state
-            .as_ref()
-            .ok_or_else(|| anyhow!("observe must be called before actions"))?;
+    fn actions(
+        &self,
+        state: &BrowserPluginState,
+    ) -> Result<Vec<BrowserAction>> {
         let mut actions = vec![BrowserAction::Reload, BrowserAction::Wait];
         if !state.navigation_history.back.is_empty() {
             actions.push(BrowserAction::Back);
@@ -146,12 +146,13 @@ impl Driver for BrowserPluginDriver {
         Ok(actions)
     }
 
-    fn apply(&mut self, action: BrowserAction) -> Result<()> {
-        let state = self
-            .state
-            .clone()
-            .ok_or_else(|| anyhow!("observe must be called before apply"))?;
-        self.driver_mut()?.apply(action.to_internal(), state)
+    fn apply(
+        &mut self,
+        action: BrowserAction,
+        state: Arc<BrowserPluginState>,
+    ) -> Result<()> {
+        self.driver_mut()?
+            .apply(action.to_internal(), Arc::clone(&state.driver_state))
     }
 
     fn schema() -> DriverSchema {

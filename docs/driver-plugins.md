@@ -15,12 +15,25 @@ pub trait Driver: Sized + 'static {
     const NAME: &'static str;
 
     fn launch(config: Self::Config) -> anyhow::Result<Self>;
-    fn observe(&mut self) -> anyhow::Result<Self::State>;
-    fn actions(&mut self) -> anyhow::Result<Vec<Self::Action>>;
-    fn apply(&mut self, action: Self::Action) -> anyhow::Result<()>;
+    fn next_event(&mut self) -> Option<DriverEvent<Self::State>>;
+    fn actions(
+        &self,
+        state: &Self::State,
+    ) -> anyhow::Result<Vec<Self::Action>>;
+    fn apply(
+        &mut self,
+        action: Self::Action,
+        state: Arc<Self::State>,
+    ) -> anyhow::Result<()>;
     fn schema() -> DriverSchema;
 }
 ```
+
+The plugin contract and Bombadil's existing `InterfaceDriver` use the same
+`DriverEvent` type. `StateChanged`, `Error`, and `None` (a closed event stream)
+remain distinct through type erasure. The serialized state emitted to
+TypeScript also retains its concrete `Arc<State>` so `actions` and `apply`
+operate on the exact state which produced the event.
 
 `DriverRegistration::of::<D>()` performs type erasure once by storing a small
 function table. Plugin authors implement no erased or CLI-specific trait.
@@ -68,8 +81,8 @@ bombadil drivers typescript
 bombadil drivers probe browser --config '{ ... }'
 ```
 
-The built-in adapters conservatively expose actions known to be valid from the
-last observation. Migrating the property runner to consume the new
-`observe/actions/apply` loop is intentionally left as the next prototype step;
+The built-in adapters conservatively expose actions known to be valid for each
+emitted state. Migrating the property runner to consume the new
+`next_event/actions/apply` loop is intentionally left as the next prototype step;
 this branch establishes the ABI-free Rust extension seam, registration and
 override semantics, code generation path, and an external SwiftUI driver.

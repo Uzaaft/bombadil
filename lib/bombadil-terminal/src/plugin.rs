@@ -11,7 +11,7 @@ use bombadil_driver_plugin::{Driver, DriverRegistration, DriverSchema};
 use bombadil_schema::terminal::{
     TerminalAction, TerminalSize, TerminalStateSummary,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::driver::TerminalDriver;
 use crate::state::TerminalState;
@@ -32,14 +32,21 @@ pub struct TerminalConfig {
     pub quiescence_millis: u64,
 }
 
+#[derive(Debug, Serialize)]
+pub struct TerminalPluginState {
+    #[serde(skip)]
+    driver_state: Arc<TerminalState>,
+    #[serde(flatten)]
+    summary: TerminalStateSummary,
+}
+
 pub struct TerminalPluginDriver {
     driver: Option<TerminalDriver>,
-    state: Option<Arc<TerminalState>>,
 }
 
 impl Driver for TerminalPluginDriver {
     type Config = TerminalConfig;
-    type State = TerminalStateSummary;
+    type State = TerminalPluginState;
     type Action = TerminalAction;
 
     const NAME: &'static str = "terminal";
@@ -61,49 +68,51 @@ impl Driver for TerminalPluginDriver {
         driver.initiate()?;
         Ok(Self {
             driver: Some(driver),
-            state: None,
         })
     }
 
-    fn observe(&mut self) -> Result<TerminalStateSummary> {
-        let state = match self.driver_mut()?.next_event() {
-            Some(DriverEvent::StateChanged(state)) => state,
-            Some(DriverEvent::Error(error)) => {
-                return Err(anyhow!(error.to_string()));
+    fn next_event(&mut self) -> Option<DriverEvent<TerminalPluginState>> {
+        let event = match self.driver_mut() {
+            Ok(driver) => driver.next_event()?,
+            Err(error) => return Some(DriverEvent::Error(Arc::new(error))),
+        };
+        Some(match event {
+            DriverEvent::StateChanged(state) => {
+                DriverEvent::StateChanged(Arc::new(TerminalPluginState {
+                    driver_state: Arc::clone(&state),
+                    summary: TerminalStateSummary {
+                        grid: state.grid.clone(),
+                        scrollback: state.scrollback.clone(),
+                        scroll_offset: state.scroll_offset,
+                        cursor: state.cursor.clone(),
+                        exit_status: state.exit_status.clone(),
+                    },
+                }))
             }
-            None => return Err(anyhow!("terminal driver closed")),
-        };
-        let result = TerminalStateSummary {
-            grid: state.grid.clone(),
-            scrollback: state.scrollback.clone(),
-            scroll_offset: state.scroll_offset,
-            cursor: state.cursor.clone(),
-            exit_status: state.exit_status.clone(),
-        };
-        self.state = Some(state);
-        Ok(result)
+            DriverEvent::Error(error) => DriverEvent::Error(error),
+        })
     }
 
-    fn actions(&mut self) -> Result<Vec<TerminalAction>> {
-        let state = self
-            .state
-            .as_ref()
-            .ok_or_else(|| anyhow!("observe must be called before actions"))?;
+    fn actions(
+        &self,
+        state: &TerminalPluginState,
+    ) -> Result<Vec<TerminalAction>> {
         Ok(vec![
             TerminalAction::Resize {
-                size: state.grid.size,
+                size: state.summary.grid.size,
             },
             TerminalAction::ScrollUp {},
             TerminalAction::ScrollDown {},
         ])
     }
 
-    fn apply(&mut self, action: TerminalAction) -> Result<()> {
-        let state = self
-            .state
-            .clone()
-            .ok_or_else(|| anyhow!("observe must be called before apply"))?;
-        self.driver_mut()?.apply(action.to_internal(), state)
+    fn apply(
+        &mut self,
+        action: TerminalAction,
+        state: Arc<TerminalPluginState>,
+    ) -> Result<()> {
+        self.driver_mut()?
+            .apply(action.to_internal(), Arc::clone(&state.driver_state))
     }
 
     fn schema() -> DriverSchema {

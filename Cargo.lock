@@ -430,6 +430,7 @@ dependencies = [
  "antithesis_sdk",
  "anyhow",
  "boa_engine",
+ "bombadil-driver-plugin",
  "bombadil-ltl",
  "bombadil-schema",
  "hegeltest",
