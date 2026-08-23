@@ -23,7 +23,7 @@ pub trait Driver: Sized + 'static {
     fn apply(
         &mut self,
         action: Self::Action,
-        state: Arc<Self::State>,
+        current_state: Arc<Self::State>,
     ) -> anyhow::Result<()>;
     fn schema() -> DriverSchema;
 }
@@ -33,7 +33,9 @@ The plugin contract and Bombadil's existing `InterfaceDriver` use the same
 `DriverEvent` type. `StateChanged`, `Error`, and `None` (a closed event stream)
 remain distinct through type erasure. The serialized state emitted to
 TypeScript also retains its concrete `Arc<State>` so `actions` and `apply`
-operate on the exact state which produced the event.
+operate on the exact current state which produced the event. The erased runtime
+retains and passes through the original `Arc<State>`; it does not reconstruct a
+state from its JSON representation.
 
 `DriverRegistration::of::<D>()` performs type erasure once by storing a small
 function table. Plugin authors implement no erased or CLI-specific trait.

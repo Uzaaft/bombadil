@@ -109,10 +109,12 @@ impl Driver for TerminalPluginDriver {
     fn apply(
         &mut self,
         action: TerminalAction,
-        state: Arc<TerminalPluginState>,
+        current_state: Arc<TerminalPluginState>,
     ) -> Result<()> {
-        self.driver_mut()?
-            .apply(action.to_internal(), Arc::clone(&state.driver_state))
+        self.driver_mut()?.apply(
+            action.to_internal(),
+            Arc::clone(&current_state.driver_state),
+        )
     }
 
     fn schema() -> DriverSchema {

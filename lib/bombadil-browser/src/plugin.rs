@@ -149,10 +149,12 @@ impl Driver for BrowserPluginDriver {
     fn apply(
         &mut self,
         action: BrowserAction,
-        state: Arc<BrowserPluginState>,
+        current_state: Arc<BrowserPluginState>,
     ) -> Result<()> {
-        self.driver_mut()?
-            .apply(action.to_internal(), Arc::clone(&state.driver_state))
+        self.driver_mut()?.apply(
+            action.to_internal(),
+            Arc::clone(&current_state.driver_state),
+        )
     }
 
     fn schema() -> DriverSchema {

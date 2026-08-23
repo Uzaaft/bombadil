@@ -46,7 +46,7 @@ pub trait Driver: Sized + 'static {
     fn apply(
         &mut self,
         action: Self::Action,
-        state: Arc<Self::State>,
+        current_state: Arc<Self::State>,
     ) -> Result<()>;
 
     /// Describe the state and action types exported to TypeScript.
@@ -127,9 +127,9 @@ impl RunningDriver {
     pub fn apply(
         &mut self,
         action: Value,
-        state: &RunningDriverState,
+        current_state: &RunningDriverState,
     ) -> Result<()> {
-        (self.apply)(self.inner.as_mut(), action, state.inner.as_ref())
+        (self.apply)(self.inner.as_mut(), action, current_state.inner.as_ref())
     }
 }
 
@@ -205,12 +205,12 @@ fn actions<D: Driver>(
 fn apply<D: Driver>(
     session: &mut dyn Any,
     action: Value,
-    state: &dyn Any,
+    current_state: &dyn Any,
 ) -> Result<()> {
     let action = serde_json::from_value(action)
         .context("action does not match driver schema")?;
-    let state = Arc::clone(concrete_state::<D>(state)?);
-    concrete::<D>(session)?.apply(action, state)
+    let current_state = Arc::clone(concrete_state::<D>(current_state)?);
+    concrete::<D>(session)?.apply(action, current_state)
 }
 
 fn concrete<D: Driver>(session: &mut dyn Any) -> Result<&mut D> {

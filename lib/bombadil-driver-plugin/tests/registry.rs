@@ -8,7 +8,9 @@ use bombadil_driver_plugin::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-struct Terminal;
+struct Terminal {
+    current_state: Option<Arc<State>>,
+}
 
 #[derive(Deserialize)]
 struct Config;
@@ -27,18 +29,28 @@ impl Driver for Terminal {
     const NAME: &'static str = "terminal";
 
     fn launch(_: Config) -> Result<Self> {
-        Ok(Self)
+        Ok(Self {
+            current_state: None,
+        })
     }
 
     fn next_event(&mut self) -> Option<DriverEvent<State>> {
-        Some(DriverEvent::StateChanged(Arc::new(State)))
+        let current_state = Arc::new(State);
+        self.current_state = Some(Arc::clone(&current_state));
+        Some(DriverEvent::StateChanged(current_state))
     }
 
     fn actions(&self, _: &State) -> Result<Vec<Action>> {
         Ok(vec![])
     }
 
-    fn apply(&mut self, _: Action, _: Arc<State>) -> Result<()> {
+    fn apply(&mut self, _: Action, current_state: Arc<State>) -> Result<()> {
+        assert!(Arc::ptr_eq(
+            self.current_state
+                .as_ref()
+                .expect("next_event must establish the current state"),
+            &current_state,
+        ));
         Ok(())
     }
 
@@ -57,7 +69,7 @@ const EXTERNAL: DriverRegistration =
     DriverRegistration::of::<Terminal>("acme-terminal");
 
 #[test]
-fn erased_session_preserves_the_event_and_state_contract() {
+fn apply_receives_the_exact_current_state_emitted_by_next_event() {
     let mut session = BUILTIN.launch(json!(null)).unwrap();
     let state = match session.next_event() {
         Some(RunningDriverEvent::StateChanged(state)) => state,

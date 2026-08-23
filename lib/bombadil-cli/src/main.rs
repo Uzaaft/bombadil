@@ -128,7 +128,7 @@ fn run_driver_command(
             let config = serde_json::from_str(&config)
                 .context("--config must be valid JSON")?;
             let mut session = registration.launch(config)?;
-            let state = match session.next_event() {
+            let current_state = match session.next_event() {
                 Some(RunningDriverEvent::StateChanged(state)) => state,
                 Some(RunningDriverEvent::Error(error)) => {
                     return Err(anyhow!(error.to_string()));
@@ -139,16 +139,16 @@ fn run_driver_command(
                     ));
                 }
             };
-            println!("state: {}", state.value());
+            println!("state: {}", current_state.value());
             println!(
                 "actions: {}",
-                serde_json::to_string(&session.actions(&state)?)?
+                serde_json::to_string(&session.actions(&current_state)?)?
             );
             if let Some(action) = apply {
                 session.apply(
                     serde_json::from_str(&action)
                         .context("--apply must be valid JSON")?,
-                    &state,
+                    &current_state,
                 )?;
             }
             Ok(())
