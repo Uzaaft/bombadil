@@ -555,6 +555,7 @@ name = "bombadil-driver-plugin"
 version = "0.7.0"
 dependencies = [
  "anyhow",
+ "bombadil-schema",
  "inventory",
  "serde",
  "serde_json",

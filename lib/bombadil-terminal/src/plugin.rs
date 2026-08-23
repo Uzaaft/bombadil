@@ -1,19 +1,17 @@
 //! Plugin-system adapter for the existing terminal driver.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Result, anyhow};
 use bombadil::driver::{DriverEvent, InterfaceDriver};
-use bombadil::specification::convert::ToInternal;
+use bombadil::specification::convert::ToSchema;
 use bombadil::specification::verifier::Specification;
 use bombadil_driver_plugin::{Driver, DriverRegistration, DriverSchema};
-use bombadil_schema::terminal::{
-    TerminalAction, TerminalSize, TerminalStateSummary,
-};
+use bombadil_schema::terminal::{TerminalSize, TerminalStateSummary};
 use serde::{Deserialize, Serialize};
 
-use crate::driver::TerminalDriver;
+use crate::driver::{TerminalAction, TerminalActionTemplate, TerminalDriver};
 use crate::state::TerminalState;
 
 #[derive(Debug, Deserialize)]
@@ -48,6 +46,7 @@ impl Driver for TerminalPluginDriver {
     type Config = TerminalConfig;
     type State = TerminalPluginState;
     type Action = TerminalAction;
+    type ActionTemplate = TerminalActionTemplate;
 
     const NAME: &'static str = "terminal";
 
@@ -93,17 +92,26 @@ impl Driver for TerminalPluginDriver {
         })
     }
 
-    fn actions(
-        &self,
-        state: &TerminalPluginState,
-    ) -> Result<Vec<TerminalAction>> {
-        Ok(vec![
-            TerminalAction::Resize {
-                size: state.summary.grid.size,
-            },
-            TerminalAction::ScrollUp {},
-            TerminalAction::ScrollDown {},
-        ])
+    fn extract_snapshots(
+        &mut self,
+        current_state: Arc<TerminalPluginState>,
+        last_action: Option<&TerminalAction>,
+    ) -> Result<Vec<bombadil_schema::Snapshot>> {
+        self.driver_mut()?
+            .extract_snapshots(
+                Arc::clone(&current_state.driver_state),
+                last_action,
+            )
+            .map(|snapshots| {
+                snapshots
+                    .into_iter()
+                    .map(|snapshot| snapshot.to_schema())
+                    .collect()
+            })
+    }
+
+    fn state_timestamp(state: &TerminalPluginState) -> SystemTime {
+        state.driver_state.timestamp
     }
 
     fn apply(
@@ -111,10 +119,8 @@ impl Driver for TerminalPluginDriver {
         action: TerminalAction,
         current_state: Arc<TerminalPluginState>,
     ) -> Result<()> {
-        self.driver_mut()?.apply(
-            action.to_internal(),
-            Arc::clone(&current_state.driver_state),
-        )
+        self.driver_mut()?
+            .apply(action, Arc::clone(&current_state.driver_state))
     }
 
     fn schema() -> DriverSchema {

@@ -2,20 +2,22 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use anyhow::{Result, anyhow};
 use bombadil::driver::{DriverEvent, InterfaceDriver};
 use bombadil_driver_plugin::{Driver, DriverRegistration, DriverSchema};
-use bombadil_schema::browser::{self, BrowserAction};
+use bombadil_schema::browser;
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 use url::Url;
 
 use crate::browser::{
     BrowserOptions, DebuggerOptions, Emulation, LaunchOptions,
+    actions::{BrowserAction, BrowserActionTemplate},
     state::BrowserState,
 };
-use crate::convert::{ToInternal, ToSchema};
+use crate::convert::ToSchema;
 use crate::driver::BrowserDriver;
 use crate::instrumentation::InstrumentationConfig;
 
@@ -63,6 +65,7 @@ impl Driver for BrowserPluginDriver {
     type Config = BrowserConfig;
     type State = BrowserPluginState;
     type Action = BrowserAction;
+    type ActionTemplate = BrowserActionTemplate;
 
     const NAME: &'static str = "browser";
 
@@ -132,18 +135,26 @@ impl Driver for BrowserPluginDriver {
         })
     }
 
-    fn actions(
-        &self,
-        state: &BrowserPluginState,
-    ) -> Result<Vec<BrowserAction>> {
-        let mut actions = vec![BrowserAction::Reload, BrowserAction::Wait];
-        if !state.navigation_history.back.is_empty() {
-            actions.push(BrowserAction::Back);
-        }
-        if !state.navigation_history.forward.is_empty() {
-            actions.push(BrowserAction::Forward);
-        }
-        Ok(actions)
+    fn extract_snapshots(
+        &mut self,
+        current_state: Arc<BrowserPluginState>,
+        last_action: Option<&BrowserAction>,
+    ) -> Result<Vec<bombadil_schema::Snapshot>> {
+        self.driver_mut()?
+            .extract_snapshots(
+                Arc::clone(&current_state.driver_state),
+                last_action,
+            )
+            .map(|snapshots| {
+                snapshots
+                    .into_iter()
+                    .map(|snapshot| snapshot.to_schema())
+                    .collect()
+            })
+    }
+
+    fn state_timestamp(state: &BrowserPluginState) -> SystemTime {
+        state.driver_state.timestamp
     }
 
     fn apply(
@@ -151,10 +162,8 @@ impl Driver for BrowserPluginDriver {
         action: BrowserAction,
         current_state: Arc<BrowserPluginState>,
     ) -> Result<()> {
-        self.driver_mut()?.apply(
-            action.to_internal(),
-            Arc::clone(&current_state.driver_state),
-        )
+        self.driver_mut()?
+            .apply(action, Arc::clone(&current_state.driver_state))
     }
 
     fn schema() -> DriverSchema {

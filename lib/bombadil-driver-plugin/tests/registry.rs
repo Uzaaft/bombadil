@@ -1,10 +1,12 @@
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use anyhow::Result;
 use bombadil_driver_plugin::{
     Driver, DriverEvent, DriverOverride, DriverRegistration, DriverRegistry,
-    DriverSchema, RunningDriverEvent, render_typescript,
+    DriverSchema, FromGeneratedAction, RunningDriverEvent, render_typescript,
 };
+use bombadil_schema::{Snapshot, Time};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -15,16 +17,26 @@ struct Terminal {
 #[derive(Deserialize)]
 struct Config;
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct State;
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct Action;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct ActionTemplate;
+
+impl FromGeneratedAction for ActionTemplate {
+    fn from_generated(_: Value) -> Result<Self> {
+        Ok(Self)
+    }
+}
 
 impl Driver for Terminal {
     type Config = Config;
     type State = State;
     type Action = Action;
+    type ActionTemplate = ActionTemplate;
 
     const NAME: &'static str = "terminal";
 
@@ -40,8 +52,28 @@ impl Driver for Terminal {
         Some(DriverEvent::StateChanged(current_state))
     }
 
-    fn actions(&self, _: &State) -> Result<Vec<Action>> {
-        Ok(vec![])
+    fn extract_snapshots(
+        &mut self,
+        current_state: Arc<State>,
+        last_action: Option<&Action>,
+    ) -> Result<Vec<Snapshot>> {
+        assert!(Arc::ptr_eq(
+            self.current_state
+                .as_ref()
+                .expect("next_event must establish the current state"),
+            &current_state,
+        ));
+        assert!(last_action.is_some());
+        Ok(vec![Snapshot {
+            index: 7,
+            name: Some("screen".to_owned()),
+            value: json!({ "ready": true }),
+            time: Time::from_system_time(SystemTime::UNIX_EPOCH),
+        }])
+    }
+
+    fn state_timestamp(_: &State) -> SystemTime {
+        SystemTime::UNIX_EPOCH
     }
 
     fn apply(&mut self, _: Action, current_state: Arc<State>) -> Result<()> {
@@ -69,7 +101,7 @@ const EXTERNAL: DriverRegistration =
     DriverRegistration::of::<Terminal>("acme-terminal");
 
 #[test]
-fn apply_receives_the_exact_current_state_emitted_by_next_event() {
+fn erased_session_preserves_extraction_and_current_state() {
     let mut session = BUILTIN.launch(json!(null)).unwrap();
     let state = match session.next_event() {
         Some(RunningDriverEvent::StateChanged(state)) => state,
@@ -80,7 +112,16 @@ fn apply_receives_the_exact_current_state_emitted_by_next_event() {
     };
 
     assert_eq!(state.value(), &Value::Null);
-    assert!(session.actions(&state).unwrap().is_empty());
+    assert_eq!(
+        session.state_timestamp(&state).unwrap(),
+        SystemTime::UNIX_EPOCH
+    );
+    let last_action = Value::Null;
+    let snapshots = session
+        .extract_snapshots(&state, Some(&last_action))
+        .unwrap();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].name.as_deref(), Some("screen"));
     session.apply(Value::Null, &state).unwrap();
 }
 

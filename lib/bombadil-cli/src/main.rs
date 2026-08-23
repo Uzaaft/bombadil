@@ -55,14 +55,14 @@ enum DriversCommand {
     List,
     /// Print generated TypeScript state/action declarations.
     Typescript,
-    /// Launch a driver and perform one next-event/actions/apply cycle.
+    /// Launch a driver and perform one next-event/extract/apply cycle.
     Probe {
         /// Registered driver name.
         name: String,
         /// Driver-specific configuration as JSON.
         #[arg(long, default_value = "{}")]
         config: String,
-        /// Optional action JSON. When omitted, probe only receives/lists.
+        /// Optional action JSON. When omitted, probe only receives/extracts.
         #[arg(long)]
         apply: Option<String>,
     },
@@ -141,8 +141,14 @@ fn run_driver_command(
             };
             println!("state: {}", current_state.value());
             println!(
-                "actions: {}",
-                serde_json::to_string(&session.actions(&current_state)?)?
+                "timestamp: {:?}",
+                session.state_timestamp(&current_state)?
+            );
+            println!(
+                "snapshots: {}",
+                serde_json::to_string(
+                    &session.extract_snapshots(&current_state, None)?
+                )?
             );
             if let Some(action) = apply {
                 session.apply(

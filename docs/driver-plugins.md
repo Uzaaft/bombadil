@@ -9,17 +9,25 @@ The prototype adds one public extension trait and two composition paths.
 ```rust
 pub trait Driver: Sized + 'static {
     type Config: DeserializeOwned + 'static;
-    type State: Serialize + 'static;
-    type Action: Serialize + DeserializeOwned + 'static;
+    type State: Debug + Serialize + 'static;
+    type Action: Clone + Debug + Serialize + DeserializeOwned + 'static;
+    type ActionTemplate: Clone
+        + Debug
+        + Serialize
+        + DeserializeOwned
+        + FromGeneratedAction
+        + 'static;
 
     const NAME: &'static str;
 
     fn launch(config: Self::Config) -> anyhow::Result<Self>;
     fn next_event(&mut self) -> Option<DriverEvent<Self::State>>;
-    fn actions(
-        &self,
-        state: &Self::State,
-    ) -> anyhow::Result<Vec<Self::Action>>;
+    fn extract_snapshots(
+        &mut self,
+        current_state: Arc<Self::State>,
+        last_action: Option<&Self::Action>,
+    ) -> anyhow::Result<Vec<bombadil_schema::Snapshot>>;
+    fn state_timestamp(state: &Self::State) -> SystemTime;
     fn apply(
         &mut self,
         action: Self::Action,
@@ -32,10 +40,15 @@ pub trait Driver: Sized + 'static {
 The plugin contract and Bombadil's existing `InterfaceDriver` use the same
 `DriverEvent` type. `StateChanged`, `Error`, and `None` (a closed event stream)
 remain distinct through type erasure. The serialized state emitted to
-TypeScript also retains its concrete `Arc<State>` so `actions` and `apply`
-operate on the exact current state which produced the event. The erased runtime
-retains and passes through the original `Arc<State>`; it does not reconstruct a
-state from its JSON representation.
+TypeScript also retains its concrete `Arc<State>` so `extract_snapshots` and
+`apply` operate on the exact current state which produced the event. The erased
+runtime retains and passes through the original `Arc<State>`; it does not
+reconstruct a state from its JSON representation.
+
+Snapshot extraction is the source of both property inputs and available action
+templates: `Verifier::step` consumes the snapshots and converts generated JSON
+actions through `ActionTemplate::from_generated`. The driver does not maintain
+a separate list of available concrete actions.
 
 `DriverRegistration::of::<D>()` performs type erasure once by storing a small
 function table. Plugin authors implement no erased or CLI-specific trait.
@@ -83,8 +96,8 @@ bombadil drivers typescript
 bombadil drivers probe browser --config '{ ... }'
 ```
 
-The built-in adapters conservatively expose actions known to be valid for each
-emitted state. Migrating the property runner to consume the new
-`next_event/actions/apply` loop is intentionally left as the next prototype step;
-this branch establishes the ABI-free Rust extension seam, registration and
-override semantics, code generation path, and an external SwiftUI driver.
+The browser, terminal, and SwiftUI adapters delegate extraction to their
+existing driver-specific extractor implementations. The probe command exercises
+the `next_event/extract_snapshots/apply` surface. Switching the existing
+browser and terminal command composition roots to registry lookup is left as a
+separate migration; their current property runners remain unchanged.

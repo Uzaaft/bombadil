@@ -4,24 +4,10 @@ use std::time::SystemTime;
 
 use anyhow::Result;
 use serde::{Serialize, de::DeserializeOwned};
-use serde_json as json;
 
-pub use bombadil_driver_plugin::DriverEvent;
+pub use bombadil_driver_plugin::{DriverEvent, FromGeneratedAction};
 
 use crate::specification::domain::Snapshot;
-
-/// Convert a JSON value produced by a specification's action generator
-/// into a validated action.
-pub trait FromGeneratedAction: Sized {
-    fn from_generated(value: json::Value) -> Result<Self>;
-}
-
-/// Identity conversion.
-impl FromGeneratedAction for json::Value {
-    fn from_generated(value: json::Value) -> Result<Self> {
-        Ok(value)
-    }
-}
 
 /// A driver runs a user interface of some sort (the system under test).
 pub trait InterfaceDriver {
