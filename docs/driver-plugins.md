@@ -43,7 +43,10 @@ remain distinct through type erasure. The serialized state emitted to
 TypeScript also retains its concrete `Arc<State>` so `extract_snapshots` and
 `apply` operate on the exact current state which produced the event. The erased
 runtime retains and passes through the original `Arc<State>`; it does not
-reconstruct a state from its JSON representation.
+reconstruct a state from its JSON representation. Erased sessions reject
+states emitted by another session, states superseded by a newer event, and
+reuse after an action attempt. A host must consume the next event before it
+extracts or applies again.
 
 Snapshot extraction is the source of both property inputs and available action
 templates: `Verifier::step` consumes the snapshots and converts generated JSON
@@ -68,7 +71,9 @@ External distributions have two choices:
 The registry groups candidates by `Driver::NAME`. A duplicate is fatal unless
 the user passes an exact `--override-driver NAME=SOURCE`. Registration order is
 never used to pick a winner. Redundant, unknown, and repeated overrides are
-also errors.
+also errors. Until the legacy property runners are migrated, overrides are
+accepted only with the `drivers` command; accepting one on a legacy command
+would misleadingly select a registration that command does not launch.
 
 ## Schemas
 

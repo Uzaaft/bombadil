@@ -135,22 +135,35 @@ impl DriverRegistration {
 
 inventory::collect!(DriverRegistration);
 
+type NextEventFn = fn(&mut dyn Any) -> Option<RunningDriverEvent>;
+type ExtractSnapshotsFn =
+    fn(&mut dyn Any, &dyn Any, Option<&Value>) -> Result<Vec<Snapshot>>;
+type StateTimestampFn = fn(&dyn Any) -> Result<SystemTime>;
+type ApplyFn = fn(&mut dyn Any, Value, &dyn Any) -> Result<()>;
+
 /// Type-erased session used after registry lookup.
 ///
 /// This is a function table rather than a second extension trait: the only
 /// contract plugin authors implement is [`Driver`].
 pub struct RunningDriver {
     inner: Box<dyn Any>,
-    next_event: fn(&mut dyn Any) -> Option<RunningDriverEvent>,
-    extract_snapshots:
-        fn(&mut dyn Any, &dyn Any, Option<&Value>) -> Result<Vec<Snapshot>>,
-    state_timestamp: fn(&dyn Any) -> Result<SystemTime>,
-    apply: fn(&mut dyn Any, Value, &dyn Any) -> Result<()>,
+    current_state_token: Option<Arc<()>>,
+    next_event: NextEventFn,
+    extract_snapshots: ExtractSnapshotsFn,
+    state_timestamp: StateTimestampFn,
+    apply: ApplyFn,
 }
 
 impl RunningDriver {
     pub fn next_event(&mut self) -> Option<RunningDriverEvent> {
-        (self.next_event)(self.inner.as_mut())
+        let event = (self.next_event)(self.inner.as_mut());
+        self.current_state_token = match &event {
+            Some(RunningDriverEvent::StateChanged(state)) => {
+                Some(Arc::clone(&state.state_token))
+            }
+            Some(RunningDriverEvent::Error(_)) | None => None,
+        };
+        event
     }
 
     pub fn extract_snapshots(
@@ -158,6 +171,7 @@ impl RunningDriver {
         current_state: &RunningDriverState,
         last_action: Option<&Value>,
     ) -> Result<Vec<Snapshot>> {
+        self.ensure_owns(current_state)?;
         (self.extract_snapshots)(
             self.inner.as_mut(),
             current_state.inner.as_ref(),
@@ -169,6 +183,7 @@ impl RunningDriver {
         &self,
         current_state: &RunningDriverState,
     ) -> Result<SystemTime> {
+        self.ensure_owns(current_state)?;
         (self.state_timestamp)(current_state.inner.as_ref())
     }
 
@@ -177,7 +192,27 @@ impl RunningDriver {
         action: Value,
         current_state: &RunningDriverState,
     ) -> Result<()> {
-        (self.apply)(self.inner.as_mut(), action, current_state.inner.as_ref())
+        self.ensure_owns(current_state)?;
+        let result = (self.apply)(
+            self.inner.as_mut(),
+            action,
+            current_state.inner.as_ref(),
+        );
+        // Once an action has been attempted, the state it targeted can no
+        // longer be assumed to describe the system under test. The host must
+        // consume another event before extracting or applying again.
+        self.current_state_token = None;
+        result
+    }
+
+    fn ensure_owns(&self, state: &RunningDriverState) -> Result<()> {
+        let Some(current_state_token) = &self.current_state_token else {
+            bail!("driver session has no current state");
+        };
+        if !Arc::ptr_eq(current_state_token, &state.state_token) {
+            bail!("state is not current for this driver session");
+        }
+        Ok(())
     }
 }
 
@@ -192,6 +227,7 @@ pub enum RunningDriverEvent {
 pub struct RunningDriverState {
     inner: Box<dyn Any>,
     value: Value,
+    state_token: Arc<()>,
 }
 
 impl RunningDriverState {
@@ -206,6 +242,7 @@ fn launch<D: Driver>(config: Value) -> Result<RunningDriver> {
     let session = D::launch(config)?;
     Ok(RunningDriver {
         inner: Box::new(session),
+        current_state_token: None,
         next_event: next_event::<D>,
         extract_snapshots: extract_snapshots::<D>,
         state_timestamp: state_timestamp::<D>,
@@ -225,6 +262,7 @@ fn next_event<D: Driver>(session: &mut dyn Any) -> Option<RunningDriverEvent> {
                     RunningDriverEvent::StateChanged(RunningDriverState {
                         inner: Box::new(state),
                         value,
+                        state_token: Arc::new(()),
                     })
                 }
                 Err(error) => RunningDriverEvent::Error(Arc::new(
@@ -337,7 +375,17 @@ impl DriverRegistry {
         }
 
         let mut merged = BTreeMap::new();
-        for (name, registrations) in candidates {
+        for (name, mut registrations) in candidates {
+            registrations.sort_by_key(|registration| registration.source());
+            if let Some(duplicate) = registrations
+                .windows(2)
+                .find(|pair| pair[0].source() == pair[1].source())
+            {
+                bail!(
+                    "source `{}` registered driver `{name}` more than once",
+                    duplicate[0].source()
+                );
+            }
             let selected = match registrations.as_slice() {
                 [only] => {
                     if requested.contains_key(name) {
@@ -369,8 +417,8 @@ impl DriverRegistry {
                         [] => bail!(
                             "override for `{name}` selected unknown source `{source}`"
                         ),
-                        _ => bail!(
-                            "source `{source}` registered driver `{name}` more than once"
+                        _ => unreachable!(
+                            "duplicate sources were rejected before override resolution"
                         ),
                     }
                 }
@@ -422,8 +470,10 @@ pub fn render_typescript(
 
 fn indent(output: &mut String, declaration: &str) {
     for line in declaration.lines() {
-        output.push_str("  ");
-        output.push_str(line);
+        if !line.is_empty() {
+            output.push_str("  ");
+            output.push_str(line);
+        }
         output.push('\n');
     }
 }

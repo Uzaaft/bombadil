@@ -22,6 +22,7 @@ use crate::driver::BrowserDriver;
 use crate::instrumentation::InstrumentationConfig;
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BrowserConfig {
     pub origin: Url,
     pub specification_bundle: String,
@@ -33,16 +34,21 @@ pub struct BrowserConfig {
     pub height: u16,
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BrowserTarget {
-    #[default]
-    Managed,
+    Managed {},
     External {
         remote_debugger: Url,
         #[serde(default)]
         create_target: bool,
     },
+}
+
+impl Default for BrowserTarget {
+    fn default() -> Self {
+        Self::Managed {}
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -73,7 +79,7 @@ impl Driver for BrowserPluginDriver {
         let runtime_directory =
             TempDir::with_prefix("bombadil_browser_plugin_")?;
         let (create_target, debugger_options) = match config.target {
-            BrowserTarget::Managed => (
+            BrowserTarget::Managed {} => (
                 true,
                 DebuggerOptions::Managed {
                     launch_options: LaunchOptions {
@@ -222,6 +228,25 @@ const BROWSER_STATE_TYPESCRIPT: &str = r#"export interface State {
     task_duration: number;
     script_duration: number;
   };
+}
+
+export interface Fingerprint {
+  test_id?: string;
+  id?: string;
+  role?: string;
+  accessible_name?: string;
+  tag: string;
+  href?: string;
+  name_attr?: string;
+  placeholder?: string;
+  input_type?: string;
+  text_content?: string;
+  structural_path?: string;
+}
+
+export interface Point {
+  x: number;
+  y: number;
 }"#;
 
 const BROWSER_ACTION_TYPESCRIPT: &str = r#"export type Action =
@@ -229,12 +254,67 @@ const BROWSER_ACTION_TYPESCRIPT: &str = r#"export type Action =
   | "Forward"
   | "Reload"
   | "Wait"
-  | { Click: { fingerprint: unknown; point: { x: number; y: number } } }
-  | { DoubleClick: { fingerprint: unknown; point: { x: number; y: number }; delay_millis: number } }
+  | { Click: { fingerprint: Fingerprint; point: Point } }
+  | { DoubleClick: { fingerprint: Fingerprint; point: Point; delay_millis: number } }
   | { TypeText: { text: string; delay_millis: number } }
   | { PressKey: { code: number } }
-  | { ScrollUp: { origin: { x: number; y: number }; distance: number } }
-  | { ScrollDown: { origin: { x: number; y: number }; distance: number } }
+  | { ScrollUp: { origin: Point; distance: number } }
+  | { ScrollDown: { origin: Point; distance: number } }
   | { SetFileInputFiles: { selector: string; files: string[] } }
-  | { MouseDrag: { from: { x: number; y: number }; to: { x: number; y: number }; steps: number; delay_millis: number } }
+  | { MouseDrag: { from: Point; to: Point; steps: number; delay_millis: number } }
   | { SetViewport: { width: number; height: number } };"#;
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use bombadil_driver_plugin::Driver;
+
+    use super::{BrowserConfig, BrowserPluginDriver, BrowserTarget};
+
+    #[test]
+    fn minimal_configuration_uses_documented_defaults() {
+        let config = serde_json::from_value::<BrowserConfig>(json!({
+            "origin": "https://example.com",
+            "specification_bundle": "bundle",
+        }))
+        .unwrap();
+
+        assert_eq!(config.width, 1024);
+        assert_eq!(config.height, 768);
+        assert!(matches!(config.target, BrowserTarget::Managed {}));
+    }
+
+    #[test]
+    fn configuration_rejects_unknown_fields() {
+        let result = serde_json::from_value::<BrowserConfig>(json!({
+            "origin": "https://example.com",
+            "specification_bundle": "bundle",
+            "widht": 800,
+        }));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn target_rejects_fields_from_another_variant() {
+        let result = serde_json::from_value::<BrowserConfig>(json!({
+            "origin": "https://example.com",
+            "specification_bundle": "bundle",
+            "target": {
+                "kind": "managed",
+                "remote_debugger": "http://localhost:9222"
+            }
+        }));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn schema_does_not_erase_action_payloads() {
+        let schema = BrowserPluginDriver::schema();
+
+        assert!(!schema.action.contains("unknown"));
+        assert!(schema.state.contains("export interface Fingerprint"));
+    }
+}

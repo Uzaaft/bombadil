@@ -80,25 +80,40 @@ fn main() -> Result<()> {
         .init();
     antithesis_init();
     let cli = Cli::parse();
-    let external =
-        bombadil_driver_plugin::inventory::iter::<DriverRegistration>
-            .into_iter()
-            .copied();
-    let registry = DriverRegistry::merge(
-        BUILTIN_DRIVERS,
-        external,
-        &cli.override_drivers,
-    )?;
     match cli.command {
-        Command::Drivers { command } => run_driver_command(command, &registry),
+        Command::Drivers { command } => {
+            let external =
+                bombadil_driver_plugin::inventory::iter::<DriverRegistration>
+                    .into_iter()
+                    .copied();
+            let registry = DriverRegistry::merge(
+                BUILTIN_DRIVERS,
+                external,
+                &cli.override_drivers,
+            )?;
+            run_driver_command(command, &registry)
+        }
         Command::Browser { command } => {
+            reject_unused_overrides(&cli.override_drivers)?;
             tokio::runtime::Runtime::new()?.block_on(browser::run(command))
         }
         #[cfg(feature = "terminal")]
         Command::Terminal { command } => {
+            reject_unused_overrides(&cli.override_drivers)?;
             terminal::run(command);
             Ok(())
         }
+    }
+}
+
+fn reject_unused_overrides(overrides: &[DriverOverride]) -> Result<()> {
+    if overrides.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "--override-driver only affects the `drivers` command; the legacy browser and \
+             terminal runners have not been migrated to registry lookup"
+        ))
     }
 }
 
@@ -159,5 +174,28 @@ fn run_driver_command(
             }
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bombadil_driver_plugin::DriverOverride;
+
+    use super::reject_unused_overrides;
+
+    #[test]
+    fn legacy_commands_reject_driver_overrides_they_cannot_honor() {
+        let error = reject_unused_overrides(&[DriverOverride {
+            name: "browser".to_owned(),
+            source: "external-browser".to_owned(),
+        }])
+        .unwrap_err();
+
+        assert!(error.to_string().contains("have not been migrated"));
+    }
+
+    #[test]
+    fn legacy_commands_without_overrides_remain_available() {
+        reject_unused_overrides(&[]).unwrap();
     }
 }

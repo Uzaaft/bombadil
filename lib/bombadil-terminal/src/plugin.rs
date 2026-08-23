@@ -15,6 +15,7 @@ use crate::driver::{TerminalAction, TerminalActionTemplate, TerminalDriver};
 use crate::state::TerminalState;
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TerminalConfig {
     pub specification: String,
     pub program: String,
@@ -168,12 +169,48 @@ const fn default_quiescence_millis() -> u64 {
 }
 
 const TERMINAL_STATE_TYPESCRIPT: &str = r#"export interface State {
-  grid: unknown;
-  scrollback: unknown;
+  grid: Grid;
+  scrollback: Grid;
   scroll_offset: number;
-  cursor: unknown;
+  cursor: Cursor;
   exit_status: { signal: string | null; code: number } | null;
-}"#;
+}
+
+export interface Grid {
+  cells: Cell[];
+  size: Size;
+}
+
+export interface Size {
+  columns: number;
+  rows: number;
+}
+
+export type Cell =
+  | { Occupied: { contents: string; wide: boolean; style: Style } }
+  | { Empty: { style: Style } }
+  | { Continuation: { style: Style } };
+
+export interface Cursor {
+  position: { column: number; row: number };
+  visible: boolean;
+  blinking: boolean;
+  visual_style: "Bar" | "Block" | "Underline" | "BlockHollow" | "Unknown";
+  color: Color;
+}
+
+export interface Style {
+  foreground_color: Color;
+  background_color: Color;
+  underline_color: Color;
+  underline: "None" | "Single" | "Double" | "Curly" | "Dotted" | "Dashed";
+  attributes: number;
+}
+
+export type Color =
+  | "None"
+  | { Palette: number }
+  | { RGB: { r: number; g: number; b: number } };"#;
 
 const TERMINAL_ACTION_TYPESCRIPT: &str = r#"export type Action =
   | { TypeText: { text: string } }
@@ -181,3 +218,47 @@ const TERMINAL_ACTION_TYPESCRIPT: &str = r#"export type Action =
   | { Click: { row: number; column: number } }
   | { ScrollUp: {} }
   | { ScrollDown: {} };"#;
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use bombadil_driver_plugin::Driver;
+
+    use super::{TerminalConfig, TerminalPluginDriver};
+
+    #[test]
+    fn minimal_configuration_uses_documented_defaults() {
+        let config = serde_json::from_value::<TerminalConfig>(json!({
+            "specification": "specification.ts",
+            "program": "example",
+        }))
+        .unwrap();
+
+        assert!(config.arguments.is_empty());
+        assert_eq!(config.columns, 100);
+        assert_eq!(config.rows, 40);
+        assert_eq!(config.scrollback_lines, 100);
+        assert_eq!(config.quiescence_millis, 5);
+    }
+
+    #[test]
+    fn configuration_rejects_unknown_fields() {
+        let result = serde_json::from_value::<TerminalConfig>(json!({
+            "specification": "specification.ts",
+            "program": "example",
+            "argumnts": []
+        }));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn schema_describes_the_complete_serialized_state() {
+        let schema = TerminalPluginDriver::schema();
+
+        assert!(!schema.state.contains("unknown"));
+        assert!(schema.state.contains("export type Cell"));
+        assert!(schema.state.contains("export interface Cursor"));
+    }
+}
