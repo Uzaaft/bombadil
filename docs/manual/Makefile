@@ -2,13 +2,16 @@
 
 SRC_DIR := src
 TARGET_DIR := target
-# Sort sources to ensure consistent ordering (01-, 02-, etc.)
-SOURCES := $(sort $(wildcard $(SRC_DIR)/*.md))
-# Extract version from parent Cargo.toml
-VERSION := $(shell grep '^version' ../../Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
 
 # Manuals are built once per driver; add a driver here and the build picks it up.
 DRIVERS := browser terminal
+
+SOURCES_GENERATED := $(foreach d,$(DRIVERS),$(TARGET_DIR)/generated/$(d)/04-reference.md)
+# Sort sources to ensure consistent ordering (01-, 02-, etc.)
+SOURCES := $(sort $(wildcard $(SRC_DIR)/*.md) $(SOURCES_GENERATED))
+
+# Extract version from parent Cargo.toml
+VERSION := $(shell grep '^version' ../../Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
 
 # Per-driver outputs all live under target/<driver>/ so the manual landing
 # page can link to PDF/EPUB/TXT with simple relative paths.
@@ -34,7 +37,7 @@ COMMON_FILTERS := \
 	--lua-filter=$(SRC_DIR)/table-nowrap.lua
 
 PANDOC_HTML_OPTS := --to=chunkedhtml --toc --toc-depth=3 -Vtoc-title="The Bombadil Manual" \
-	--split-level=1 --resource-path=$(SRC_DIR) --css=../reset.css --css=../style.css \
+	--split-level=3 --resource-path=$(SRC_DIR) --css=../reset.css --css=../style.css \
 	--highlight-style=monochrome \
 	$(COMMON_FILTERS) \
 	--lua-filter=$(SRC_DIR)/code-nav.lua \
@@ -76,12 +79,25 @@ man: $(MAN_FILES)
 $(TARGET_DIR):
 	mkdir -p $(TARGET_DIR)
 
+$(TARGET_DIR)/generated/%/04-reference.md: $(SRC_DIR)/partials/reference.md $(SRC_DIR)/partials/cli-reference.md $(SRC_DIR)/partials/typescript-reference.md
+	mkdir -p $(dir $@)
+	# This executable and the env var is provided by the Nix environment.
+	cat $(SRC_DIR)/partials/reference.md > $@
+	echo "" >> $@
+	## TODO: generate this
+	cat $(SRC_DIR)/partials/cli-reference.md >> $@
+	echo "" >> $@
+	cat $(SRC_DIR)/partials/typescript-reference.md >> $@
+	echo "" >> $@
+	typescript-reference --package-root $(NPM_PACKAGE) --driver $* >> $@
+
 # For chunked HTML, pandoc creates the directory itself
 # Remove it first if it exists, then let pandoc create it
 $(TARGET_DIR)/%/.built: $(SOURCES) $(SRC_DIR)/template.html $(SRC_DIR)/driver.lua $(SRC_DIR)/replace.lua $(SRC_DIR)/admonitions.lua $(SRC_DIR)/code-nav.lua $(SRC_DIR)/table-nowrap.lua | $(TARGET_DIR)
 	rm -rf $(TARGET_DIR)/$*
 	mkdir -p $(TARGET_DIR)
 	$(PANDOC) $(SOURCES) --output $(TARGET_DIR)/$*/ $(PANDOC_HTML_OPTS) -M driver=$*
+	python3 $(SRC_DIR)/html-post-process.py $(TARGET_DIR)
 	# Replace the per-driver index (pandoc's chunkedhtml TOC page) with a
 	# redirect so chunked-html "previous" links and any direct visits land
 	# on the single top-level manual landing.
@@ -140,4 +156,4 @@ watch:
 dev: clean all
 	@concurrently -n serve,watch \
 		"browser-sync start --server $(TARGET_DIR) --port 8000 --no-open --files '$(TARGET_DIR)/**/*'" \
-		"watchexec -w $(SRC_DIR) -e css,html,js,md,yaml,lua make html"
+		"watchexec -w $(SRC_DIR) -w $(SRC_DIR)/partials -e css,html,js,md,yaml,lua make html"
