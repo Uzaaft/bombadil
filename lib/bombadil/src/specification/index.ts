@@ -1,21 +1,19 @@
 import {
+  RegisteredCustomAction,
   ExtractorCell,
   Runtime,
   type JSON,
   type TimeUnit,
 } from "@antithesishq/bombadil/internal";
 
-import {
-  type ActionGenerator,
-  type Tree,
-} from "@antithesishq/bombadil/actions";
 import * as bombadilActions from "@antithesishq/bombadil/actions";
+import {
+  type Tree,
+  type ActionGenerator,
+} from "@antithesishq/bombadil/actions";
 
 export { type Cell, type JSON } from "@antithesishq/bombadil/internal";
-export {
-  ActionGenerator,
-  type Tree,
-} from "@antithesishq/bombadil/actions";
+export { ActionGenerator, type Tree } from "@antithesishq/bombadil/actions";
 
 /**
  * The runtime singleton that all `extract` calls register into and that
@@ -28,16 +26,32 @@ export const runtime = new Runtime<unknown>();
 export function extract<S, T extends JSON>(
   query: (state: S) => T,
 ): ExtractorCell<T, S> {
-  return new ExtractorCell<T, unknown>(
-    runtime,
-    query as (state: unknown) => T,
-  );
+  return new ExtractorCell<T, unknown>(runtime, query as (state: unknown) => T);
 }
 
-export function actions<A>(
-  generate: () => Tree<A> | A[],
-): ActionGenerator<A> {
+export function actions<A>(generate: () => Tree<A> | A[]): ActionGenerator<A> {
   return bombadilActions.actions(generate);
+}
+
+/**
+ * Identifies a custom action and provides it with its arguments.
+ * This base action might not be supported by all drivers.
+ */
+export type CustomAction<Args> = {
+  Custom: { name: string; args: Args };
+};
+
+/**
+ * Register a new custom action, returning a function used to create
+ * action templates in generators. Name must be unique. Prefer using
+ * the export from the driver module, which has more a specific type.
+ */
+export function registerCustomAction<Args extends JSON[]>(
+  name: string,
+  handler: (...args: Args) => Promise<void>,
+): (...args: Args) => CustomAction<Args> {
+  runtime.registerCustomAction(new RegisteredCustomAction(name, handler));
+  return (...args) => ({ Custom: { name, args } });
 }
 
 export function weighted<A>(

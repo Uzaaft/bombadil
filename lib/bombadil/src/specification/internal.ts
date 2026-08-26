@@ -47,16 +47,35 @@ export class ExtractorCell<T extends JSON, S> implements Cell<T> {
     return this;
   }
 
+  /**
+   * Runs the extractor and updates its cached value.
+   */
   run(state: S): T {
-    return this.extract(state);
+    const value = this.extract(state);
+    this.update(value);
+    return value;
   }
 }
+
+export class RegisteredCustomAction<Args extends JSON[]> {
+  constructor(
+    public name: string,
+    public run: (...args: Args) => Promise<void>,
+  ) {}
+}
+
+type RunExtractorResult = {
+  index: number;
+  name: string | null;
+  value: JSON;
+};
 
 export class Runtime<S> {
   extractors: ExtractorCell<any, S>[] = [];
   private extractingDepth: number = 0;
   private tracking = false;
   private accesses = new Set<number>();
+  private customActions: Record<string, RegisteredCustomAction<any>> = {};
 
   registerExtractor(cell: ExtractorCell<any, S>): number {
     const index = this.extractors.length;
@@ -82,9 +101,7 @@ export class Runtime<S> {
     }
   }
 
-  runExtractors(
-    state: S,
-  ): { index: number; name: string | null; value: JSON }[] {
+  runExtractors(state: S): RunExtractorResult[] {
     return this.extractors.map((extractor, index) => {
       this.extractingDepth++;
       try {
@@ -107,5 +124,24 @@ export class Runtime<S> {
           "Use shared helper functions to avoid duplication.",
       );
     }
+  }
+
+  registerCustomAction<Args extends JSON[]>(
+    action: RegisteredCustomAction<Args>,
+  ) {
+    if (action.name in this.customActions) {
+      throw new Error(`Custom action "${action.name}" is already registered.`);
+    }
+    this.customActions[action.name] = action;
+  }
+
+  async runCustomAction(name: string, args: unknown): Promise<void> {
+    const action = this.customActions[name];
+    if (!action) {
+      return Promise.reject(
+        new Error(`Custom action "${name}" is not registered.`),
+      );
+    }
+    return action.run(args);
   }
 }

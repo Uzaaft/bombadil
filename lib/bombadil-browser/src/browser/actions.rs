@@ -7,6 +7,9 @@ use bombadil::specification::generators::StringGenerator;
 use bombadil_schema::browser::Fingerprint;
 use chromiumoxide::Page;
 use chromiumoxide::cdp::browser_protocol::{dom, emulation, input, page};
+use chromiumoxide::cdp::js_protocol::runtime::{
+    CallArgument, CallFunctionOnParamsBuilder,
+};
 use serde::{Deserialize, Serialize};
 use serde_json as json;
 use tokio::time::sleep;
@@ -64,6 +67,10 @@ pub enum BrowserAction<U8 = u8, U16 = u16, U64 = u64, F64 = f64, Text = String>
     SetViewport {
         width: U16,
         height: U16,
+    },
+    Custom {
+        name: String,
+        arguments: Vec<json::Value>,
     },
 }
 
@@ -295,6 +302,24 @@ impl BrowserAction {
                 )
                 .await?;
             }
+            BrowserAction::Custom {
+                name,
+                arguments: options,
+            } => {
+                let call = CallFunctionOnParamsBuilder::default().function_declaration(
+                    r#"async (name, options) => {
+                        try {
+                            await __bombadilRequire('@antithesishq/bombadil').runtime.runCustomAction(name, options);
+                        } catch (err) {
+                            throw new Error(`Error executing custom action ${JSON.stringify(name)}: ${err}`);
+                        }
+                    }"#
+                )
+                    .argument(CallArgument::builder().value(json::json!(name)).build())
+                    .argument(CallArgument::builder().value(options.clone()).build())
+                .build().map_err(|err| anyhow!(err))?;
+                page.evaluate_function(call).await?;
+            }
         };
         Ok(())
     }
@@ -371,6 +396,13 @@ impl BrowserActionTemplate {
                     height: rng.random_range(height.clone()),
                 }
             }
+            BrowserAction::Custom {
+                name,
+                arguments: options,
+            } => BrowserAction::Custom {
+                name: name.clone(),
+                arguments: options.clone(),
+            },
         }
     }
 

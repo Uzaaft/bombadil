@@ -5,6 +5,7 @@ use anyhow::ensure;
 use bombadil::specification::js::{JsRange, JsStringGenerator};
 use bombadil_schema::{Rect, browser::Fingerprint};
 use serde::{Deserialize, Serialize};
+use serde_json as json;
 
 use crate::browser::actions::{BrowserAction, BrowserActionTemplate};
 use crate::geometry::Point;
@@ -63,6 +64,11 @@ pub enum JsAction {
     SetViewport {
         width: JsRange,
         height: JsRange,
+    },
+    Custom {
+        name: String,
+        // Must be named "args" and not "arguments" due to JS keyword.
+        args: Vec<json::Value>,
     },
 }
 
@@ -175,6 +181,10 @@ impl TryInto<BrowserActionTemplate> for JsAction {
                 }
                 BrowserAction::SetViewport { width, height }
             }
+            JsAction::Custom {
+                name,
+                args: arguments,
+            } => BrowserAction::Custom { name, arguments },
         })
     }
 }

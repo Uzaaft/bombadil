@@ -1,4 +1,5 @@
 import {
+  CustomAction,
   type ActionGenerator,
   type Cell,
   type JSON,
@@ -13,6 +14,7 @@ export type Point<Number = number> = {
 };
 
 export type Action<Number = number, String = string> =
+  | CustomAction<JSON[]>
   | "Back"
   | "Forward"
   | "Reload"
@@ -119,6 +121,22 @@ export function weighted(
   return bombadil.weighted<ActionTemplate>(value);
 }
 
+/**
+ * Register a new custom action, returning a function used to create
+ * action templates in generators. Name must be unique.
+ *
+ * The first two parameters to the handler are `Document` and `Window`, and then
+ * any arguments passed to the function.
+ */
+export function registerCustomAction<Args extends JSON[]>(
+  name: string,
+  handler: (document: Document, window: Window, ...args: Args) => Promise<void>,
+): (...args: Args) => ActionTemplate {
+  return bombadil.registerCustomAction(name, (...args) =>
+    handler(document, window, ...args),
+  );
+}
+
 // Fingerprints
 
 export type Fingerprint = {
@@ -150,9 +168,9 @@ export function getFingerprint(el: Element): Fingerprint {
   const accessibleName =
     el.getAttribute("aria-label") ??
     (el.getAttribute("aria-labelledby")
-      ? (document
+      ? document
           .getElementById(el.getAttribute("aria-labelledby")!)
-          ?.textContent?.trim() ?? null)
+          ?.textContent?.trim()
       : null) ??
     el.getAttribute("title");
 

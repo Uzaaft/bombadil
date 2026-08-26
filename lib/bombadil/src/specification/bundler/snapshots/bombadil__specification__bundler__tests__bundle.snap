@@ -129,9 +129,9 @@ expression: bundle
   };
 
   modules["@antithesishq/bombadil"] = function(module, exports, require) {
-    module.exports.__esModule=true;const { ExtractorCell, Runtime } = __bombadilRequire("@antithesishq/bombadil/internal");
-    __bombadilRequire("@antithesishq/bombadil/actions");
+    module.exports.__esModule=true;const { RegisteredCustomAction, ExtractorCell, Runtime } = __bombadilRequire("@antithesishq/bombadil/internal");
     const bombadilActions = __bombadilRequire("@antithesishq/bombadil/actions");
+    __bombadilRequire("@antithesishq/bombadil/actions");
     const { ActionGenerator } = __bombadilRequire("@antithesishq/bombadil/actions");
     const runtime = new Runtime();
     function extract(query) {
@@ -139,6 +139,13 @@ expression: bundle
     }
     function actions(generate) {
     	return bombadilActions.actions(generate);
+    }
+    function registerCustomAction(name, handler) {
+    	runtime.registerCustomAction(new RegisteredCustomAction(name, handler));
+    	return (...args) => ({ Custom: {
+    		name,
+    		args
+    	} });
     }
     function weighted(value) {
     	return bombadilActions.weighted(value);
@@ -298,6 +305,7 @@ expression: bundle
     module.exports.runtime = runtime;
     module.exports.extract = extract;
     module.exports.actions = actions;
+    module.exports.registerCustomAction = registerCustomAction;
     module.exports.weighted = weighted;
     module.exports.Formula = Formula;
     module.exports.Pure = Pure;
@@ -402,8 +410,19 @@ expression: bundle
     		this.name = name;
     		return this;
     	}
+    	/**
+    	* Runs the extractor and updates its cached value.
+    	*/
     	run(state) {
-    		return this.extract(state);
+    		const value = this.extract(state);
+    		this.update(value);
+    		return value;
+    	}
+    }
+    class RegisteredCustomAction {
+    	constructor(name, run) {
+    		this.name = name;
+    		this.run = run;
     	}
     }
     class Runtime {
@@ -411,6 +430,7 @@ expression: bundle
     	extractingDepth = 0;
     	tracking = false;
     	accesses = new Set();
+    	customActions = {};
     	registerExtractor(cell) {
     		const index = this.extractors.length;
     		this.extractors.push(cell);
@@ -450,8 +470,22 @@ expression: bundle
     			throw new Error("Cannot access cell.current from within an extractor. " + "Extractors must only depend on the 'state' parameter. " + "Use shared helper functions to avoid duplication.");
     		}
     	}
+    	registerCustomAction(action) {
+    		if (action.name in this.customActions) {
+    			throw new Error(`Custom action "${action.name}" is already registered.`);
+    		}
+    		this.customActions[action.name] = action;
+    	}
+    	async runCustomAction(name, args) {
+    		const action = this.customActions[name];
+    		if (!action) {
+    			return Promise.reject(new Error(`Custom action "${name}" is not registered.`));
+    		}
+    		return action.run(args);
+    	}
     }
     module.exports.ExtractorCell = ExtractorCell;
+    module.exports.RegisteredCustomAction = RegisteredCustomAction;
     module.exports.Runtime = Runtime;
   };
 
