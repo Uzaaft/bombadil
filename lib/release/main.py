@@ -164,14 +164,12 @@ def main() -> None:
     def tag_release() -> None:
         nonlocal tag
         assert new_version is not None
-        print(
-            f"""
+        print(f"""
   {bold('What to do next:')}
   1. Review the PR on GitHub and let CI pass.
   2. Merge the PR (squash merge).
   3. Come back here and press Enter.
-"""
-        )
+""")
         pause("Press Enter after the PR has been merged…")
 
         run("git fetch")
