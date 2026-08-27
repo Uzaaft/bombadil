@@ -95,6 +95,10 @@
             type = "app";
             program = "${self.packages.${system}.nix-build-push}/bin/nix-build-push";
           };
+          hotpath = {
+            type = "app";
+            program = "${pkgs.callPackage ./lib/nix/cargo-hotpath.nix { }}/bin/hotpath";
+          };
         };
 
         checks = {
@@ -116,7 +120,6 @@
               # nativeBuildInputs takes priority over inputsFrom in
               # PATH, so rustToolchainWasm shadows crane's toolchain.
               nativeBuildInputs = [ rustToolchainWasm ];
-              packages = [ (pkgs.callPackage ./lib/nix/cargo-hotpath.nix { }) ];
               buildInputs =
                 with pkgs;
                 [
