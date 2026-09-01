@@ -127,6 +127,7 @@
                   rust-analyzer
                   crate2nix
                   cargo-insta
+                  cargo-expand
                   lldb
 
                   # Nix
