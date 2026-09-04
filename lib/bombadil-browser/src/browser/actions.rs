@@ -198,7 +198,6 @@ impl BrowserAction {
             }
             BrowserAction::DoubleClick {
                 point,
-                // TODO: revert to two invocations of regular click?
                 delay_millis: _,
                 fingerprint: _,
             } => {
