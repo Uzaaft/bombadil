@@ -21,7 +21,7 @@ use serde::Deserialize;
 use serde::de::IgnoredAny;
 use serde_json as json;
 
-use anyhow::{anyhow, bail, ensure};
+use anyhow::{Context, anyhow, bail};
 
 use crate::error::Result;
 use crate::events::{Events, Subscribers};
@@ -180,14 +180,18 @@ impl ConnectionInner {
             params: serde_json::to_value(&cmd)?,
         };
         let (reply_tx, reply_rx) = mpmc::bounded(1);
-        self.worker_tx.send(WorkerRequest::Send {
-            call,
-            reply_tx: Some(reply_tx),
-        })?;
+        self.worker_tx
+            .send(WorkerRequest::Send {
+                call,
+                reply_tx: Some(reply_tx),
+            })
+            .context(format!("send failed for {}", cmd.identifier()))?;
         self.commands_waker.wake()?;
 
         let result = match reply_rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(result) => result,
+            Ok(result) => {
+                result.context(format!("send failed for {}", cmd.identifier()))
+            }
             Err(mpmc::RecvTimeoutError::Timeout) => {
                 log::debug!(
                     "timed out waiting for response for {}",
@@ -275,28 +279,50 @@ fn calls_drain(
     ws: &mut WebSocket<MaybeTlsStream<TcpStream>>,
     requests_rx: &mpmc::Receiver<WorkerRequest>,
     calls_in_flight: &mut CallsInFlight,
-) -> Result<DrainResult> {
+) -> DrainResult {
     loop {
         match requests_rx.try_recv() {
             Ok(WorkerRequest::Send { call, reply_tx }) => {
-                ensure!(
-                    !calls_in_flight.contains_key(&call.id),
-                    "call {} already in flight",
-                    call.id
-                );
-                calls_in_flight.insert(call.id, reply_tx);
-                let payload = serde_json::to_string(&call)?;
-                ws.send(WsMessage::text(payload))?;
+                let reply_err =
+                    |reply_tx: &Option<mpmc::Sender<Result<json::Value>>>,
+                     err| {
+                        if let Some(tx) = reply_tx
+                            && let Err(err) = tx.send(Err(err))
+                        {
+                            log::error!("failed to send error: {err:#}");
+                        }
+                    };
+
+                if calls_in_flight.contains_key(&call.id) {
+                    reply_err(
+                        &reply_tx,
+                        anyhow!("call {} already in flight", call.id,),
+                    );
+                    continue;
+                }
+
+                match serde_json::to_string(&call) {
+                    Ok(payload) => {
+                        if let Err(err) = ws.send(WsMessage::text(payload)) {
+                            reply_err(&reply_tx, err.into());
+                        } else {
+                            calls_in_flight.insert(call.id, reply_tx);
+                        }
+                    }
+                    Err(_) => todo!(),
+                }
             }
             Ok(WorkerRequest::Close) => {
-                ws.close(None)?;
-                return Ok(DrainResult::Shutdown);
+                if let Err(err) = ws.close(None) {
+                    log::error!("failed to send error: {err:#}");
+                }
+                return DrainResult::Shutdown;
             }
             Err(mpmc::TryRecvError::Empty) => {
-                return Ok(DrainResult::Continue);
+                return DrainResult::Continue;
             }
             Err(mpmc::TryRecvError::Disconnected) => {
-                bail!("command mpmc closed unexpectedly");
+                panic!("command mpmc closed unexpectedly");
             }
         }
     }
@@ -395,7 +421,7 @@ fn websocket_worker(
 
     loop {
         if matches!(
-            calls_drain(&mut ws, &requests_rx, &mut calls_in_flight)?,
+            calls_drain(&mut ws, &requests_rx, &mut calls_in_flight),
             DrainResult::Shutdown
         ) {
             return Ok(());
@@ -412,7 +438,7 @@ fn websocket_worker(
                             &mut ws,
                             &requests_rx,
                             &mut calls_in_flight,
-                        )?,
+                        ),
                         DrainResult::Shutdown
                     ) {
                         return Ok(());
