@@ -636,10 +636,14 @@ fn forward_inner_events(
 fn run_state_machine(
     context: BrowserContext,
     events_rx: mpmc::Receiver<InnerEvent>,
-    mut state_current: InnerState,
+    state_current: InnerState,
 ) {
-    let _ = thread::spawn(move || -> Result<()> {
-        let result = {
+    let _ = thread::spawn(move || {
+        fn run(
+            context: &BrowserContext,
+            events_rx: mpmc::Receiver<InnerEvent>,
+            mut state_current: InnerState,
+        ) -> Result<()> {
             log::info!("processing events");
             while let Ok(event) = events_rx.recv() {
                 state_current = if log::log_enabled!(log::Level::Debug) {
@@ -649,7 +653,7 @@ fn run_state_machine(
                     );
                     let event_formatted = format!("{:?}", event);
                     let state_new =
-                        process_event(&context, state_current, event)?;
+                        process_event(context, state_current, event)?;
                     log::debug!(
                         "{} + {} -> {:?} ({})",
                         before,
@@ -659,19 +663,21 @@ fn run_state_machine(
                     );
                     state_new
                 } else {
-                    process_event(&context, state_current, event)?
+                    process_event(context, state_current, event)?
                 }
             }
             log::debug!("shutting down browser state machine");
-            Ok::<(), anyhow::Error>(())
-        };
-        if let Err(error) = result {
-            log::error!("state machine error: {:?}", error);
-            let _ = context.sender.send(BrowserEvent::Error(Arc::new(
-                anyhow!("error when processing event: {:?}", error),
-            )));
+            Ok(())
         }
-        Ok(())
+
+        if let Err(error) = run(&context, events_rx, state_current) {
+            log::error!("state machine error: {:#}", error);
+            if let Err(error) = context.sender.send(BrowserEvent::Error(
+                Arc::new(anyhow!("error when processing event: {:#}", error)),
+            )) {
+                log::error!("failed to send browse revent: {:#}", error);
+            }
+        }
     });
 }
 
