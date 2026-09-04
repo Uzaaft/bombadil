@@ -1098,3 +1098,28 @@ export const counterDoubled = eventually(() =>
         .run()
         ;
 }
+
+#[test]
+fn test_back_forward() {
+    BrowserIntegrationTest::new("back-forward")
+        .time_limit(Duration::from_secs(5))
+        .specification(
+            r##"
+import { eventually, always } from "@antithesishq/bombadil";
+import { branch } from "@antithesishq/bombadil/actions";
+import { actions, extract } from "@antithesishq/bombadil/browser";
+import { clicks, back, forward, lastAction } from "@antithesishq/bombadil/browser/defaults/actions";
+
+export const _actions = actions(() => {
+  if (lastAction.current === null) {
+    return clicks.generate();
+  }
+  return branch([[1, back.generate()], [1, forward.generate()]]);
+});
+
+// export const eventuallyDone = eventually(() => lastAction.current == "Forward");
+export const ok = always(() => true);
+"##,
+        )
+        .run();
+}
