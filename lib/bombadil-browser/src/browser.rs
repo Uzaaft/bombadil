@@ -245,7 +245,7 @@ impl Browser {
             });
         }
 
-        forward_inner_events(&connection, frame_id.clone(), events_tx.clone())?;
+        forward_inner_events(&connection, frame_id.clone(), events_tx.clone());
 
         connection.send(runtime::EnableParams::default(), Some(&session_id))?;
         connection.send(dom::EnableParams::default(), Some(&session_id))?;
@@ -492,21 +492,24 @@ fn forward_inner_events(
     connection: &cdp::Connection,
     frame_id: FrameId,
     events_tx: mpmc::Sender<InnerEvent>,
-) -> Result<()> {
+) {
     let events = connection.events.all();
 
     let _ = thread::spawn(move || {
         for event in events {
             let inner_event = try_match!(event, {
                 runtime::EventExecutionContextCreated: event => {
-                    // TODO: filter these, ignoring some?
-                    log::debug!("got execution context created event: {:?}", event.context);
                     #[derive(Deserialize)]
                     struct AuxData {
                         #[serde(rename = "frameId")]
                         frame_id: Option<FrameId>,
+                        #[serde(rename = "isDefault")]
+                        is_default: bool
                     }
-                    if let Some(aux) = event.context.aux_data && let Ok(aux) = json::from_value::<AuxData>(aux) && let Some(frame_id) = aux.frame_id {
+                    if let Some(aux) = event.context.aux_data 
+                        && let Ok(aux) = json::from_value::<AuxData>(aux) 
+                            && let Some(frame_id) = aux.frame_id 
+                            && aux.is_default {
                         Some(InnerEvent::ExecutionContextCreated(event.context.unique_id.clone(), frame_id))
                     } else {
                         None
@@ -628,8 +631,6 @@ fn forward_inner_events(
         }
         log::debug!("forward_inner_events terminated");
     });
-
-    Ok(())
 }
 
 fn run_state_machine(
@@ -687,6 +688,8 @@ fn process_event(
                     "execution context id created for main frame: {id}"
                 );
                 state.shared.execution_context_id = Some(id);
+            } else {
+                log::debug!("ignoring execution context id: {id}");
             }
             state
         }
