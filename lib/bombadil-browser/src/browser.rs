@@ -239,9 +239,20 @@ impl Browser {
         // Background task to keep the latest screencast frame updated.
         {
             let latest_frame = latest_frame.clone();
+            let events_tx = events_tx.clone();
             thread::spawn(move || {
                 while let Ok(frame) = frames_rx.recv() {
-                    *latest_frame.lock().unwrap() = Some(frame);
+                    match frame {
+                        Ok(frame) => {
+                            *latest_frame.lock().unwrap() = Some(frame)
+                        }
+                        Err(error) => {
+                            let _ = events_tx.send(InnerEvent::Fatal(format!(
+                                "screencast worker failed: {error:#}"
+                            )));
+                            break;
+                        }
+                    }
                 }
             });
         }
