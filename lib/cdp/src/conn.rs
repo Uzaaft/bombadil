@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::net::TcpStream;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, RawFd};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -28,6 +28,9 @@ use crate::events::{Events, Subscribers};
 
 const WEBSOCKET: Token = Token(0);
 const COMMANDS: Token = Token(1);
+
+#[cfg(test)]
+static RETRYABLE_WRITE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone)]
 pub struct Connection {
@@ -279,59 +282,133 @@ fn calls_drain(
     ws: &mut WebSocket<MaybeTlsStream<TcpStream>>,
     requests_rx: &mpmc::Receiver<WorkerRequest>,
     calls_in_flight: &mut CallsInFlight,
-) -> DrainResult {
+) -> Result<DrainResult> {
     loop {
         match requests_rx.try_recv() {
             Ok(WorkerRequest::Send { call, reply_tx }) => {
-                let reply_err =
+                let reply_error =
                     |reply_tx: &Option<mpmc::Sender<Result<json::Value>>>,
-                     err| {
-                        if let Some(tx) = reply_tx
-                            && let Err(err) = tx.send(Err(err))
-                        {
-                            log::error!("failed to send error: {err:#}");
+                     error| {
+                        if let Some(tx) = reply_tx {
+                            if let Err(error) = tx.send(Err(error)) {
+                                log::error!(
+                                    "failed sending command error: {error:#}"
+                                );
+                            }
+                        } else {
+                            log::error!("posted command failed: {error:#}");
                         }
                     };
 
                 if calls_in_flight.contains_key(&call.id) {
-                    reply_err(
+                    reply_error(
                         &reply_tx,
-                        anyhow!("call {} already in flight", call.id,),
+                        anyhow!("call {} already in flight", call.id),
                     );
                     continue;
                 }
 
-                match serde_json::to_string(&call) {
-                    Ok(payload) => {
-                        if let Err(err) = ws.send(WsMessage::text(payload)) {
-                            reply_err(&reply_tx, err.into());
-                        } else {
-                            calls_in_flight.insert(call.id, reply_tx);
-                        }
+                let payload = match serde_json::to_string(&call) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        reply_error(&reply_tx, error.into());
+                        continue;
                     }
-                    Err(_) => todo!(),
+                };
+                if let Err(error) =
+                    write_nonblocking(ws, WsMessage::text(payload))
+                {
+                    let message = format!("{error:#}");
+                    reply_error(&reply_tx, anyhow!(message.clone()));
+                    bail!("failed writing call {}: {message}", call.id);
                 }
+                calls_in_flight.insert(call.id, reply_tx);
             }
             Ok(WorkerRequest::Close) => {
-                if let Err(err) = ws.close(None) {
-                    log::error!("failed to send error: {err:#}");
+                match ws.close(None) {
+                    Ok(()) => {}
+                    Err(error) if is_retryable(&error) => {}
+                    Err(error) => return Err(error.into()),
                 }
-                return DrainResult::Shutdown;
+                return Ok(DrainResult::Shutdown);
             }
             Err(mpmc::TryRecvError::Empty) => {
-                return DrainResult::Continue;
+                return Ok(DrainResult::Continue);
             }
             Err(mpmc::TryRecvError::Disconnected) => {
-                panic!("command mpmc closed unexpectedly");
+                bail!("command mpmc closed unexpectedly");
             }
         }
     }
 }
 
+fn is_retryable(error: &tungstenite::Error) -> bool {
+    matches!(
+        error,
+        tungstenite::Error::Io(error)
+            if error.kind() == ErrorKind::WouldBlock
+                || error.kind() == ErrorKind::TimedOut
+    )
+}
+
+fn record_retryable_write() {
+    #[cfg(test)]
+    RETRYABLE_WRITE_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+fn write_nonblocking(
+    ws: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    message: WsMessage,
+) -> Result<()> {
+    match ws.write(message) {
+        Ok(()) => Ok(()),
+        // Tungstenite retains the frame after an I/O failure. Writable
+        // readiness will drive `flush` again.
+        Err(error) if is_retryable(&error) => {
+            record_retryable_write();
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn flush_nonblocking(
+    ws: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+) -> Result<bool> {
+    match ws.flush() {
+        Ok(()) => Ok(false),
+        Err(error) if is_retryable(&error) => {
+            record_retryable_write();
+            Ok(true)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn set_write_interest(
+    poll: &Poll,
+    fd_raw: RawFd,
+    registered: &mut bool,
+    write_pending: bool,
+) -> Result<()> {
+    if *registered == write_pending {
+        return Ok(());
+    }
+
+    let interest = if write_pending {
+        Interest::READABLE.add(Interest::WRITABLE)
+    } else {
+        Interest::READABLE
+    };
+    poll.registry()
+        .reregister(&mut SourceFd(&fd_raw), WEBSOCKET, interest)?;
+    *registered = write_pending;
+    Ok(())
+}
+
 #[hotpath::measure]
 fn handle_message(
     msg: WsMessage,
-    ws: &mut WebSocket<MaybeTlsStream<TcpStream>>,
     calls_in_flight: &mut CallsInFlight,
     subscribers: &Arc<Mutex<Subscribers>>,
 ) -> Result<()> {
@@ -392,9 +469,8 @@ fn handle_message(
                 }
             }
         }
-        WsMessage::Ping(payload) => {
-            ws.send(WsMessage::Pong(payload))?;
-        }
+        // Tungstenite queues Pong replies automatically while reading.
+        WsMessage::Ping(_) => {}
         WsMessage::Pong(_) => {}
         WsMessage::Close(_) => {
             bail!("The websocket connection was closed by the peer.");
@@ -418,15 +494,26 @@ fn websocket_worker(
     // other reason not receiving responses
     let mut calls_in_flight: CallsInFlight = HashMap::new();
     let mut mio_events = MioEvents::with_capacity(16);
+    let fd_raw = match ws.get_ref() {
+        MaybeTlsStream::Plain(stream) => stream.as_raw_fd(),
+        _ => bail!("unsupported stream type"),
+    };
+    let mut write_interest_registered = false;
 
     loop {
         if matches!(
-            calls_drain(&mut ws, &requests_rx, &mut calls_in_flight),
+            calls_drain(&mut ws, &requests_rx, &mut calls_in_flight)?,
             DrainResult::Shutdown
         ) {
             return Ok(());
         }
-        ws.flush()?;
+        let mut write_pending = flush_nonblocking(&mut ws)?;
+        set_write_interest(
+            &poll,
+            fd_raw,
+            &mut write_interest_registered,
+            write_pending,
+        )?;
 
         poll.poll(&mut mio_events, None)?;
 
@@ -438,32 +525,148 @@ fn websocket_worker(
                             &mut ws,
                             &requests_rx,
                             &mut calls_in_flight,
-                        ),
+                        )?,
                         DrainResult::Shutdown
                     ) {
                         return Ok(());
                     }
-                    ws.flush()?;
+                    write_pending = flush_nonblocking(&mut ws)?;
                 }
-                WEBSOCKET => loop {
-                    match ws.read() {
-                        Ok(msg) => handle_message(
-                            msg,
-                            &mut ws,
-                            &mut calls_in_flight,
-                            &subscribers,
-                        )?,
-                        Err(tungstenite::error::Error::Io(ref e))
-                            if e.kind() == ErrorKind::WouldBlock
-                                || e.kind() == ErrorKind::TimedOut =>
-                        {
-                            break;
-                        }
-                        Err(e) => return Err(e.into()),
+                WEBSOCKET => {
+                    if event.is_writable() {
+                        write_pending = flush_nonblocking(&mut ws)?;
                     }
-                },
+                    if event.is_readable() {
+                        loop {
+                            match ws.read() {
+                                Ok(msg) => handle_message(
+                                    msg,
+                                    &mut calls_in_flight,
+                                    &subscribers,
+                                )?,
+                                Err(error) if is_retryable(&error) => break,
+                                Err(error) => return Err(error.into()),
+                            }
+                        }
+                        write_pending = flush_nonblocking(&mut ws)?;
+                    }
+                }
                 _ => {}
             }
+
+            set_write_interest(
+                &poll,
+                fd_raw,
+                &mut write_interest_registered,
+                write_pending,
+            )?;
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    use serde::{Deserialize, Serialize};
+
+    use super::*;
+    use cdp_types::{Command, Method, MethodId};
+
+    #[derive(Debug, Serialize)]
+    struct TestCommand {
+        payload: String,
+    }
+
+    impl Method for TestCommand {
+        fn identifier(&self) -> MethodId {
+            Cow::Borrowed("Test.command")
+        }
+    }
+
+    impl Command for TestCommand {
+        type Response = TestResponse;
+    }
+
+    #[derive(Debug, Deserialize, PartialEq, Eq)]
+    struct TestResponse {
+        received: bool,
+    }
+
+    fn websocket_server(
+        pause_before_reading: Duration,
+    ) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let config = WebSocketConfig::default()
+                .max_message_size(None)
+                .max_frame_size(None);
+            let mut websocket =
+                tungstenite::accept_with_config(stream, Some(config)).unwrap();
+            thread::sleep(pause_before_reading);
+
+            loop {
+                match websocket.read() {
+                    Ok(WsMessage::Text(text)) => {
+                        let message: json::Value =
+                            serde_json::from_str(text.as_str()).unwrap();
+                        websocket
+                            .send(WsMessage::text(
+                                json::json!({
+                                    "id": message["id"],
+                                    "result": {"received": true},
+                                })
+                                .to_string(),
+                            ))
+                            .unwrap();
+                    }
+                    Ok(WsMessage::Close(_))
+                    | Err(tungstenite::Error::ConnectionClosed)
+                    | Err(tungstenite::Error::AlreadyClosed) => break,
+                    Ok(_) => {}
+                    Err(error) => {
+                        panic!("test WebSocket server failed: {error}")
+                    }
+                }
+            }
+        });
+        (format!("ws://{address}"), handle)
+    }
+
+    #[test]
+    fn large_write_survives_socket_backpressure() {
+        RETRYABLE_WRITE_COUNT.store(0, Ordering::Relaxed);
+        let (url, server) = websocket_server(Duration::from_millis(250));
+        let connection = Connection::connect(url).unwrap();
+
+        connection
+            .post(
+                TestCommand {
+                    payload: "x".repeat(16 * 1024 * 1024),
+                },
+                None,
+            )
+            .unwrap();
+        let response = connection
+            .send(
+                TestCommand {
+                    payload: "small".into(),
+                },
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(response, TestResponse { received: true });
+        assert!(RETRYABLE_WRITE_COUNT.load(Ordering::Relaxed) > 0);
+        connection.close().unwrap();
+        server.join().unwrap();
+    }
+
 }
