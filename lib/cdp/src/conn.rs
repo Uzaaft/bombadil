@@ -117,17 +117,9 @@ impl ConnectionInner {
         let handle = {
             let subscribers = subscribers.clone();
             thread::spawn(move || {
-                let result =
-                    websocket_worker(ws, poll, worker_rx, subscribers.clone());
-                let close_error =
-                    result.as_ref().err().map(|error| format!("{error:#}"));
-                subscribers
-                    .lock()
-                    .expect("failed to close event subscribers")
-                    .close(close_error);
-                if let Err(err) = result {
-                    log::error!("websocket worker died: {err}");
-                }
+                supervise_worker(&subscribers, || {
+                    websocket_worker(ws, poll, worker_rx, subscribers.clone())
+                });
             })
         };
 
@@ -266,6 +258,26 @@ impl ConnectionInner {
 impl Drop for ConnectionInner {
     fn drop(&mut self) {
         let _ = self.close();
+    }
+}
+
+fn supervise_worker(
+    subscribers: &Arc<Mutex<Subscribers>>,
+    worker: impl FnOnce() -> Result<()>,
+) {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(worker));
+    let error = match result {
+        Ok(Ok(())) => None,
+        Ok(Err(error)) => Some(format!("{error:#}")),
+        Err(_) => Some("websocket worker panicked".to_string()),
+    };
+    subscribers
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .close(error.clone());
+    subscribers.clear_poison();
+    if let Some(error) = error {
+        log::error!("websocket worker died: {error}");
     }
 }
 
@@ -673,6 +685,20 @@ mod tests {
         assert!(RETRYABLE_WRITE_COUNT.load(Ordering::Relaxed) > 0);
         connection.close().unwrap();
         server.join().unwrap();
+    }
+
+    #[test]
+    fn worker_panic_wakes_subscribers() {
+        let subscribers = Arc::new(Mutex::new(Subscribers::default()));
+        let events = Events {
+            subscribers: subscribers.clone(),
+        };
+        let receiver = events.subscribe::<TestEvent>();
+        supervise_worker(&subscribers, || panic!("injected worker panic"));
+        assert_eq!(
+            receiver.next().unwrap_err().to_string(),
+            "websocket worker panicked"
+        );
     }
 
     #[test]
