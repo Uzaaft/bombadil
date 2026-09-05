@@ -28,9 +28,8 @@ impl Subscribers {
         assert!(!self.closed, "Subscribers are closed, can't dispatch");
         let event = Arc::new(event);
 
-        // Evict disconnected channels while dispatching (`send` returns Err
-        // in case of disconnected receiver). Blocking send is crucial, as a
-        // slow consumer must not lose events.
+        // These channels are unbounded, so a slow subscriber cannot block the
+        // WebSocket worker that must read command responses.
         self.all.retain(|s| s.send(event.clone()).is_ok());
         if let Some(subscriptions) = self.single.get_mut(&event.method) {
             subscriptions.retain(|s| s.send(event.clone()).is_ok());
@@ -57,7 +56,7 @@ impl Events {
             !subscribers.closed,
             "Subscribers are closed, can't subscribe with .all()"
         );
-        let (tx, rx) = mpmc::bounded(32);
+        let (tx, rx) = mpmc::unbounded();
         subscribers.all.push(tx);
         rx
     }
@@ -73,7 +72,7 @@ impl Events {
             !subscribers.closed,
             "Subscribers are closed, can't subscribe with .subscribe()"
         );
-        let (tx, rx) = mpmc::bounded(32);
+        let (tx, rx) = mpmc::unbounded();
         subscribers
             .single
             .entry(T::method_id())
@@ -117,4 +116,56 @@ impl<T: MethodType + DeserializeOwned> Subscriber<T> {
             };
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+    use std::time::Duration;
+
+    use serde::Deserialize;
+
+    use super::*;
+
+    #[derive(Debug, Deserialize)]
+    struct TestEvent;
+
+    impl MethodType for TestEvent {
+        fn method_id() -> MethodId {
+            Cow::Borrowed("Test.event")
+        }
+    }
+
+    fn event() -> CdpJsonEventMessage {
+        CdpJsonEventMessage {
+            method: TestEvent::method_id(),
+            session_id: None,
+            params: serde_json::value::RawValue::from_string("{}".into())
+                .unwrap(),
+        }
+    }
+
+    #[test]
+    fn slow_subscriber_does_not_block_dispatch() {
+        let subscribers = Arc::new(Mutex::new(Subscribers::default()));
+        let events = Events {
+            subscribers: subscribers.clone(),
+        };
+        let receiver = events.all();
+        let (done_tx, done_rx) = mpmc::bounded(1);
+
+        std::thread::spawn(move || {
+            let mut subscribers = subscribers.lock().unwrap();
+            for _ in 0..100 {
+                subscribers.dispatch(event());
+            }
+            done_tx.send(()).unwrap();
+        });
+
+        done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("dispatch blocked on a slow subscriber");
+        assert_eq!(receiver.len(), 100);
+    }
+
 }
