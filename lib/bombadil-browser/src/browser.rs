@@ -346,11 +346,20 @@ impl Browser {
             browser_options: browser_options.clone(),
         };
 
-        instrumentation::instrument_js_coverage(
+        let instrumentation_errors = instrumentation::instrument_js_coverage(
             connection.clone(),
             &session_id,
             browser_options.instrumentation.clone(),
         )?;
+        {
+            let events_tx = events_tx.clone();
+            thread::spawn(move || {
+                if let Ok(error) = instrumentation_errors.recv() {
+                    let _ =
+                        events_tx.send(InnerEvent::Fatal(format!("{error:#}")));
+                }
+            });
+        }
 
         let state_shared = InnerStateShared::default();
         let state_initial = InnerState {
