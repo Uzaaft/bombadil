@@ -89,6 +89,7 @@ pub struct CdpJsonEventMessage {
     /// Name of the method
     pub method: MethodId,
     /// The session this event is meant for.
+    #[serde(rename = "sessionId")]
     pub session_id: Option<String>,
     /// Raw JSON payload of the event, parsed lazily by consumers.
     pub params: Box<serde_json::value::RawValue>,
@@ -334,6 +335,24 @@ mod tests {
         Ok(crate::try_match!(event, {
             TestEvent: event => Some(event.value),
         }, _ => None))
+    }
+
+    #[test]
+    fn event_deserialization_preserves_session_id() {
+        let event: CdpJsonEventMessage = serde_json::from_str(
+            r#"{"method":"Debugger.resumed","sessionId":"page-session","params":{}}"#,
+        ).unwrap();
+
+        assert_eq!(event.session_id(), Some("page-session"));
+    }
+
+    #[test]
+    fn event_deserialization_accepts_browser_events_without_session() {
+        let event: CdpJsonEventMessage = serde_json::from_str(
+            r#"{"method":"Target.targetDestroyed","params":{"targetId":"page"}}"#,
+        ).unwrap();
+
+        assert_eq!(event.session_id(), None);
     }
 
     #[test]
