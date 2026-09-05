@@ -1304,6 +1304,13 @@ fn capture_browser_state(
         }
     }
 
+    log::debug!(
+        "requesting capture pause: generation={}, session={:?}, frame={:?}, execution_context={}",
+        state.shared.generation.next(),
+        context.session_id,
+        context.frame_id,
+        execution_context_id,
+    );
     context.connection.post(
         runtime::EvaluateParams::builder()
             .expression("debugger;0")

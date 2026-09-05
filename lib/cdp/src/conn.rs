@@ -148,7 +148,12 @@ impl ConnectionInner {
         session_id: Option<&SessionId>,
     ) -> Result<()> {
         let call_id = self.next_call_id();
-        log::debug!("posting {} ({})", cmd.identifier(), call_id);
+        log::debug!(
+            "posting {} ({}), session={:?}",
+            cmd.identifier(),
+            call_id,
+            session_id
+        );
 
         let call = MethodCall {
             id: call_id,
@@ -172,7 +177,12 @@ impl ConnectionInner {
         session_id: Option<&SessionId>,
     ) -> Result<T::Response> {
         let call_id = self.next_call_id();
-        log::debug!("sending {} ({})", cmd.identifier(), call_id);
+        log::debug!(
+            "sending {} ({}), session={:?}",
+            cmd.identifier(),
+            call_id,
+            session_id
+        );
 
         let call = MethodCall {
             id: call_id,
@@ -451,6 +461,13 @@ fn handle_message(
                             text_str
                         )
                     })?;
+                if let Some(error) = &response.error {
+                    log::debug!(
+                        "received command error from websocket: call={}, error={}",
+                        response.id,
+                        error,
+                    );
+                }
                 if let Some(reply_tx) = calls_in_flight.remove(&response.id) {
                     // There's only a reply_tx if it was a `send`, not for `post`.
                     if let Some(reply_tx) = reply_tx {
@@ -463,10 +480,15 @@ fn handle_message(
                             let _ = reply_tx.send(Ok(result));
                         }
                     } else {
-                        log::debug!(
-                            "ignoring response for post {}",
-                            response.id
-                        );
+                        if response.error.is_none() {
+                            log::debug!(
+                                "received response for post {}: exception_details={:?}",
+                                response.id,
+                                response.result.as_ref().and_then(|result| {
+                                    result.get("exceptionDetails")
+                                }),
+                            );
+                        }
                     }
                 } else {
                     bail!(
@@ -487,6 +509,29 @@ fn handle_message(
                         "received {} from websocket: session={:?}",
                         event.method,
                         event.session_id,
+                    );
+                }
+                // Observe lifecycle changes before dispatch: the browser state
+                // machine may be blocked waiting for an evaluation response.
+                if matches!(
+                    event.method.as_ref(),
+                    "Page.frameStartedNavigating"
+                        | "Page.frameRequestedNavigation"
+                        | "Page.frameStartedLoading"
+                        | "Page.frameStoppedLoading"
+                        | "Page.frameNavigated"
+                        | "Page.navigatedWithinDocument"
+                        | "Page.frameDetached"
+                        | "Runtime.executionContextCreated"
+                        | "Runtime.executionContextDestroyed"
+                        | "Runtime.executionContextsCleared"
+                        | "Target.detachedFromTarget"
+                ) {
+                    log::debug!(
+                        "received {} from websocket: session={:?}, params={}",
+                        event.method,
+                        event.session_id,
+                        event.params.get(),
                     );
                 }
                 let mut subscribers = subscribers.lock().map_err(|_| {
