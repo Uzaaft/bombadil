@@ -57,12 +57,10 @@ impl Events {
             .subscribers
             .lock()
             .expect("failed to acquire lock for subscribers");
-        assert!(
-            !subscribers.closed,
-            "Subscribers are closed, can't subscribe with .all()"
-        );
         let (tx, rx) = mpmc::unbounded();
-        subscribers.all.push(tx);
+        if !subscribers.closed {
+            subscribers.all.push(tx);
+        }
         rx
     }
 
@@ -73,16 +71,14 @@ impl Events {
             .subscribers
             .lock()
             .expect("failed to acquire lock for subscribers");
-        assert!(
-            !subscribers.closed,
-            "Subscribers are closed, can't subscribe with .subscribe()"
-        );
         let (tx, rx) = mpmc::unbounded();
-        subscribers
-            .single
-            .entry(T::method_id())
-            .or_default()
-            .push(tx);
+        if !subscribers.closed {
+            subscribers
+                .single
+                .entry(T::method_id())
+                .or_default()
+                .push(tx);
+        }
         Subscriber {
             _phantom: PhantomData::<T>,
             rx,
@@ -206,5 +202,28 @@ mod tests {
 
         let error = receiver.next().unwrap_err();
         assert_eq!(error.to_string(), "worker failed");
+    }
+
+    #[test]
+    fn subscribing_after_worker_failure_returns_disconnected_receivers() {
+        let subscribers = Arc::new(Mutex::new(Subscribers::default()));
+        let events = Events { subscribers };
+        events
+            .subscribers
+            .lock()
+            .unwrap()
+            .close(Some("worker failed".into()));
+        assert!(matches!(
+            events.all().try_recv(),
+            Err(mpmc::TryRecvError::Disconnected)
+        ));
+        assert_eq!(
+            events
+                .subscribe::<TestEvent>()
+                .next()
+                .unwrap_err()
+                .to_string(),
+            "worker failed"
+        );
     }
 }
