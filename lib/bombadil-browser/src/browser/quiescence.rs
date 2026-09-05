@@ -20,6 +20,12 @@ pub fn start(
         let mut deadline_idle = Instant::now() + timeout_idle;
         loop {
             let deadline_next = deadline_idle.min(deadline_max);
+            // A ready activity channel always wins over select's default arm.
+            // Check the deadline first so continuous traffic cannot starve it.
+            if Instant::now() >= deadline_next {
+                let _ = result_tx.send(());
+                break;
+            }
             mpmc::select! {
                 recv(activity.receiver()) -> bump => {
                     match bump {
@@ -137,6 +143,17 @@ mod tests {
         drop(empty_tx);
         assert_eq!(wait.recv(), Err(mpmc::RecvError {}));
         assert!(start.elapsed() < Duration::from_millis(100));
+    }
+
+    #[test]
+    fn ready_activity_cannot_starve_expired_deadline() {
+        let (tx, rx) = mpmc::unbounded();
+        for _ in 0..1000 {
+            tx.send(Duration::from_secs(1)).unwrap();
+        }
+        drop(tx);
+        let wait = start(rx.into(), Duration::from_secs(1), Duration::ZERO);
+        assert_eq!(wait.recv_timeout(Duration::from_secs(1)), Ok(()));
     }
 
     fn unfold<T: Send + 'static>(
