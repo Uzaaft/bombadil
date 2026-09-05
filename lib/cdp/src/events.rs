@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use crossbeam_channel as mpmc;
 use serde::de::DeserializeOwned;
 use std::{
@@ -17,6 +17,7 @@ pub struct Events {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Subscribers {
     pub(crate) closed: bool,
+    pub(crate) close_error: Option<String>,
     pub(crate) all: Vec<mpmc::Sender<Arc<CdpJsonEventMessage>>>,
     pub(crate) single:
         HashMap<MethodId, Vec<mpmc::Sender<Arc<CdpJsonEventMessage>>>>,
@@ -39,8 +40,12 @@ impl Subscribers {
         }
     }
 
-    pub(crate) fn close(&mut self) {
+    pub(crate) fn close(&mut self, error: Option<String>) {
+        if self.closed {
+            return;
+        }
         self.closed = true;
+        self.close_error = error;
         self.all.clear();
         self.single.clear();
     }
@@ -81,6 +86,7 @@ impl Events {
         Subscriber {
             _phantom: PhantomData::<T>,
             rx,
+            subscribers: self.subscribers.clone(),
         }
     }
 
@@ -89,7 +95,15 @@ impl Events {
             .subscribers
             .lock()
             .expect("failed to acquire lock for subscribers close");
-        subscribers.close();
+        subscribers.close(None);
+    }
+
+    pub fn close_error(&self) -> Option<String> {
+        self.subscribers
+            .lock()
+            .expect("failed to acquire lock for subscriber error")
+            .close_error
+            .clone()
     }
 }
 
@@ -97,6 +111,7 @@ impl Events {
 pub struct Subscriber<T: DeserializeOwned> {
     _phantom: PhantomData<T>,
     rx: mpmc::Receiver<Arc<CdpJsonEventMessage>>,
+    subscribers: Arc<Mutex<Subscribers>>,
 }
 
 impl<T: MethodType + DeserializeOwned> Subscriber<T> {
@@ -112,7 +127,15 @@ impl<T: MethodType + DeserializeOwned> Subscriber<T> {
                         )?));
                     }
                 }
-                Err(mpmc::RecvError) => return Ok(None),
+                Err(mpmc::RecvError) => {
+                    let error = self
+                        .subscribers
+                        .lock()
+                        .expect("failed to acquire lock for subscriber error")
+                        .close_error
+                        .clone();
+                    return error.map_or(Ok(None), |error| Err(anyhow!(error)));
+                }
             };
         }
     }
@@ -168,4 +191,20 @@ mod tests {
         assert_eq!(receiver.len(), 100);
     }
 
+    #[test]
+    fn typed_subscriber_reports_worker_error() {
+        let subscribers = Arc::new(Mutex::new(Subscribers::default()));
+        let events = Events {
+            subscribers: subscribers.clone(),
+        };
+        let receiver = events.subscribe::<TestEvent>();
+
+        subscribers
+            .lock()
+            .unwrap()
+            .close(Some("worker failed".into()));
+
+        let error = receiver.next().unwrap_err();
+        assert_eq!(error.to_string(), "worker failed");
+    }
 }

@@ -117,9 +117,15 @@ impl ConnectionInner {
         let handle = {
             let subscribers = subscribers.clone();
             thread::spawn(move || {
-                if let Err(err) =
-                    websocket_worker(ws, poll, worker_rx, subscribers)
-                {
+                let result =
+                    websocket_worker(ws, poll, worker_rx, subscribers.clone());
+                let close_error =
+                    result.as_ref().err().map(|error| format!("{error:#}"));
+                subscribers
+                    .lock()
+                    .expect("failed to close event subscribers")
+                    .close(close_error);
+                if let Err(err) = result {
                     log::error!("websocket worker died: {err}");
                 }
             })
@@ -669,4 +675,37 @@ mod tests {
         server.join().unwrap();
     }
 
+    #[test]
+    fn worker_failure_disconnects_event_subscribers_with_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let websocket = tungstenite::accept(stream).unwrap();
+            drop(websocket);
+        });
+        let connection =
+            Connection::connect(format!("ws://{address}")).unwrap();
+        let subscriber = connection.events.subscribe::<TestEvent>();
+        let (result_tx, result_rx) = mpmc::bounded(1);
+
+        thread::spawn(move || {
+            result_tx.send(subscriber.next()).unwrap();
+        });
+
+        let result = result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("subscriber remained blocked after worker failure");
+        assert!(result.is_err());
+        server.join().unwrap();
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct TestEvent;
+
+    impl cdp_types::MethodType for TestEvent {
+        fn method_id() -> MethodId {
+            Cow::Borrowed("Test.event")
+        }
+    }
 }
