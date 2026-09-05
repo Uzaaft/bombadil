@@ -525,6 +525,10 @@ fn handle_message(
                         | "Runtime.executionContextCreated"
                         | "Runtime.executionContextDestroyed"
                         | "Runtime.executionContextsCleared"
+                        | "Target.targetCreated"
+                        | "Target.attachedToTarget"
+                        | "Target.targetInfoChanged"
+                        | "Target.targetDestroyed"
                         | "Target.detachedFromTarget"
                 ) {
                     log::debug!(

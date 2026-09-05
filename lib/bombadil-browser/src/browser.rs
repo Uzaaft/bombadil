@@ -258,6 +258,8 @@ impl Browser {
         }
 
         forward_inner_events(&connection, frame_id.clone(), events_tx.clone())?;
+        // Observe new tabs and their opener IDs without attaching to them.
+        connection.send(target::SetDiscoverTargetsParams::new(true), None)?;
         log::debug!(
             "browser debugger session={:?}, target={:?}, frame={:?}",
             session_id,
