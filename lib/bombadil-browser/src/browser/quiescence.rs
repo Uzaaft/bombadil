@@ -4,11 +4,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Start the countdown. Returns channel with a single value
-/// when quiescent. If `activity_rx` disconnects, so does the
-/// returned channel receiver.
+use crate::browser::activity::ActivityStream;
+
+/// Start the countdown. Returns channel with a single value when quiescent.
+/// If the activity stream disconnects, so does the returned channel receiver.
 pub fn start(
-    activity_rx: mpmc::Receiver<Duration>,
+    activity: ActivityStream,
     timeout_idle: Duration,
     timeout_max: Duration,
 ) -> mpmc::Receiver<()> {
@@ -20,7 +21,7 @@ pub fn start(
         loop {
             let deadline_next = deadline_idle.min(deadline_max);
             mpmc::select! {
-                recv(activity_rx) -> bump => {
+                recv(activity.receiver()) -> bump => {
                     match bump {
                         Ok(bump) => {
                             log::debug!("quiescence timer bumped by {bump:?}");
@@ -50,8 +51,6 @@ pub fn start(
 
 #[cfg(test)]
 mod tests {
-    use crate::browser::activity::ActivityStream;
-
     use super::*;
     use std::time::Instant;
 
@@ -68,8 +67,11 @@ mod tests {
     fn fires_after_timeout_idle_with_no_activity() {
         init();
         let (_empty_tx, empty_rx) = mpmc::unbounded();
-        let wait =
-            start(empty_rx, Duration::from_millis(100), Duration::from_secs(5));
+        let wait = start(
+            empty_rx.into(),
+            Duration::from_millis(100),
+            Duration::from_secs(5),
+        );
         let t = Instant::now();
         wait.recv().unwrap();
         let elapsed = t.elapsed();
@@ -91,7 +93,7 @@ mod tests {
         });
 
         let wait = start(
-            activity_rx,
+            activity_rx.into(),
             Duration::from_millis(150),
             Duration::from_secs(5),
         );
@@ -111,7 +113,7 @@ mod tests {
         });
 
         let wait = start(
-            activity_rx,
+            activity_rx.into(),
             Duration::from_millis(100),
             Duration::from_millis(300),
         );
@@ -126,8 +128,11 @@ mod tests {
     fn drop_handle_cancels() {
         init();
         let (empty_tx, empty_rx) = mpmc::unbounded();
-        let wait =
-            start(empty_rx, Duration::from_secs(10), Duration::from_secs(10));
+        let wait = start(
+            empty_rx.into(),
+            Duration::from_secs(10),
+            Duration::from_secs(10),
+        );
         let start = Instant::now();
         drop(empty_tx);
         assert_eq!(wait.recv(), Err(mpmc::RecvError {}));
@@ -137,7 +142,7 @@ mod tests {
     fn unfold<T: Send + 'static>(
         initial: T,
         mut f: impl FnMut(T) -> Option<(Duration, T)> + Send + 'static,
-    ) -> (mpmc::Sender<Duration>, ActivityStream) {
+    ) -> (mpmc::Sender<Duration>, mpmc::Receiver<Duration>) {
         let (tx, rx) = mpmc::unbounded();
         {
             let tx = tx.clone();
