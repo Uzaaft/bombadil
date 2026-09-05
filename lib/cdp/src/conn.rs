@@ -479,6 +479,16 @@ fn handle_message(
                     .map_err(|err| {
                         anyhow!("failed to parse event '{}': {err}", text_str)
                     })?;
+                if matches!(
+                    event.method.as_ref(),
+                    "Debugger.paused" | "Debugger.resumed"
+                ) {
+                    log::debug!(
+                        "received {} from websocket: session={:?}",
+                        event.method,
+                        event.session_id,
+                    );
+                }
                 let mut subscribers = subscribers.lock().map_err(|_| {
                     anyhow!("failed to acquire lock for subscribers")
                 })?;

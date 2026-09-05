@@ -1,4 +1,4 @@
-use anyhow::ensure;
+use anyhow::{Context, ensure};
 use anyhow::{Result, anyhow, bail};
 use base64::Engine;
 use cdp::Binary;
@@ -258,6 +258,12 @@ impl Browser {
         }
 
         forward_inner_events(&connection, frame_id.clone(), events_tx.clone())?;
+        log::debug!(
+            "browser debugger session={:?}, target={:?}, frame={:?}",
+            session_id,
+            target_id,
+            frame_id,
+        );
 
         connection.send(runtime::EnableParams::default(), Some(&session_id))?;
         connection.send(dom::EnableParams::default(), Some(&session_id))?;
@@ -539,6 +545,7 @@ fn forward_inner_events(
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
             || -> Result<()> {
                 for event in events {
+                    let event_session_id = &event.session_id;
                     let inner_event = try_match!(event, {
                     runtime::EventExecutionContextCreated: event => {
                         #[derive(Deserialize)]
@@ -571,6 +578,13 @@ fn forward_inner_events(
                         Some(InnerEvent::Loaded)
                     },
                     debugger::EventPaused: event => {
+                        log::debug!(
+                            "forwarding Debugger.paused: session={:?}, reason={:?}, call_frame={:?}, location={:?}",
+                            event_session_id,
+                            event.reason,
+                            event.call_frames.first().map(|frame| &frame.call_frame_id),
+                            event.call_frames.first().map(|frame| &frame.location),
+                        );
                         Some(InnerEvent::Paused {
                             reason: event.reason.clone(),
                             exception: event.data.clone(),
@@ -581,6 +595,7 @@ fn forward_inner_events(
                         })
                     },
                     debugger::EventResumed => {
+                        log::debug!("forwarding Debugger.resumed: session={:?}", event_session_id);
                         Some(InnerEvent::Resumed)
                     },
                     runtime::EventExceptionThrown: e => {
@@ -717,6 +732,16 @@ fn run_state_machine(
                             state_current.kind, state_current.shared.generation
                         );
                         let event_formatted = format!("{:?}", event);
+                        if matches!(
+                            event,
+                            InnerEvent::Paused { .. } | InnerEvent::Resumed
+                        ) {
+                            log::debug!(
+                                "processing {} + {}",
+                                before,
+                                event_formatted
+                            );
+                        }
                         let state_new =
                             process_event(&context, state_current, event)?;
                         log::debug!(
@@ -905,7 +930,10 @@ fn process_event(
                 exceptions,
                 screenshot,
                 generation,
-            )?;
+            ).with_context(|| format!(
+                "state capture failed: generation={}, session={:?}, call_frame={:?}",
+                generation, context.session_id, call_frame_id,
+            ))?;
 
             context
                 .sender
