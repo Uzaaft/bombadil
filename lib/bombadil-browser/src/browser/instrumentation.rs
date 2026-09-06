@@ -244,10 +244,16 @@ pub fn instrument_js_coverage(
             Ok(Err(error)) => format!("{error:#}"),
             Err(_) => "worker panicked".to_string(),
         };
+        log::error!("Fetch instrumentation worker failed: {error}");
         let cleanup_error = cleanup_connection
             .send(fetch::DisableParams::default(), Some(&cleanup_session_id))
             .err()
-            .map(|error| format!("; disabling Fetch also failed: {error:#}"))
+            .map(|error| {
+                log::error!(
+                    "disabling Fetch after worker failure failed: {error:#}"
+                );
+                format!("; disabling Fetch also failed: {error:#}")
+            })
             .unwrap_or_default();
         let _ = error_tx.send(anyhow!(
             "Fetch instrumentation worker failed: {error}{cleanup_error}"

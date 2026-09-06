@@ -95,6 +95,7 @@ pub fn screencast_start(
             Ok(Err(error)) => error,
             Err(_) => anyhow!("screencast worker panicked"),
         };
+        log::error!("screencast worker failed: {error:#}");
         let _ = tx.send(Err(error));
     });
 

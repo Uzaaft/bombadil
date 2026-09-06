@@ -527,6 +527,7 @@ fn auto_accept_dialogs(
             Ok(Err(error)) => format!("{error:#}"),
             Err(_) => "worker panicked".to_string(),
         };
+        log::error!("JavaScript dialog worker failed: {error}");
         let _ = events_tx.send(InnerEvent::Fatal(format!(
             "JavaScript dialog worker failed: {error}"
         )));
@@ -708,6 +709,7 @@ fn forward_inner_events(
             Err(_) => Some("worker panicked".to_string()),
         };
         if let Some(error) = error {
+            log::error!("failed forwarding CDP events: {error}");
             let _ = error_tx.send(InnerEvent::Fatal(format!(
                 "failed forwarding CDP events: {error}"
             )));
@@ -808,6 +810,9 @@ fn apply_action(
                 );
             }
             Err(_) => {
+                log::error!(
+                    "worker panicked while applying action {browser_action:?}"
+                );
                 let _ = events_tx.send(InnerEvent::Fatal(format!(
                     "worker panicked while applying action {browser_action:?}"
                 )));
