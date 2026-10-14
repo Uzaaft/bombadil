@@ -2,7 +2,7 @@ use anyhow::anyhow;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
-use const_format::{formatcp, str_replace};
+use const_format::formatcp;
 use oxc::allocator;
 use oxc::ast::ast::{
     AssignmentOperator, AssignmentTarget, Expression, Statement,
@@ -54,16 +54,12 @@ pub const EDGE_MAP_SIZE: usize = 64 * 1024;
 
 const LOCATION_PREVIOUS: &str = "previous";
 
-const PRELUDE: &str = str_replace!(
-    formatcp!(
-        "window.{NAMESPACE} = window.{NAMESPACE} || {{
-            {EDGES_PREVIOUS}: new Uint8Array({EDGE_MAP_SIZE}),
-            {EDGES_CURRENT}: new Uint8Array({EDGE_MAP_SIZE}),
-            {LOCATION_PREVIOUS}: 0,
-        }};"
-    ),
-    "        ", // indent of the block above (hacky, but it's covered by snapshot tests)
-    ""
+const PRELUDE: &str = formatcp!(
+    "window.{NAMESPACE} = window.{NAMESPACE} || {{
+        {EDGES_PREVIOUS}: new Uint8Array({EDGE_MAP_SIZE}),
+        {EDGES_CURRENT}: new Uint8Array({EDGE_MAP_SIZE}),
+        {LOCATION_PREVIOUS}: 0,
+    }};"
 );
 
 pub fn instrument_source_code(
@@ -75,10 +71,10 @@ pub fn instrument_source_code(
     let mut program = parse(&allocator, source_text, source_type)?;
     instrument_program(&allocator, &mut program, source_id)?;
 
-    let program_codegen = Codegen::new().build(&program);
+    let prelude = parse(&allocator, PRELUDE, source_type)?;
+    program.body.splice(0..0, prelude.body);
 
-    let code = format!("{PRELUDE}\n{}", program_codegen.code);
-    Ok(code)
+    Ok(Codegen::new().build(&program).code)
 }
 
 fn parse<'a>(
@@ -344,6 +340,7 @@ mod tests {
         generators::{booleans, integers},
     };
     use insta::assert_snapshot;
+    use oxc::span::ContentEq;
 
     fn coverage_hits(source_id: SourceId, source: &str) -> u32 {
         let code = instrument_source_code(source_id, source, SourceType::cjs())
@@ -374,6 +371,28 @@ mod tests {
             "if ({first}) {{}} else {{}}\nif ({second}) {{}} else {{}}"
         );
         assert_eq!(coverage_hits(source_id, &source), 2);
+    }
+
+    #[test]
+    fn instrumented_script_preserves_directive_prologue() {
+        let source = "'custom'; 'use strict'; 0;";
+        let allocator = Allocator::default();
+        let source_type = SourceType::cjs();
+        let original = parse(&allocator, source, source_type).unwrap();
+        let prelude = parse(&allocator, PRELUDE, source_type).unwrap();
+        let code =
+            instrument_source_code(SourceId(0), source, source_type).unwrap();
+        let actual = parse(&allocator, &code, source_type).unwrap();
+
+        assert!(actual.directives.content_eq(&original.directives));
+        assert_eq!(actual.body.len(), prelude.body.len() + original.body.len());
+        assert!(
+            actual
+                .body
+                .iter()
+                .zip(prelude.body.iter().chain(&original.body))
+                .all(|(actual, expected)| actual.content_eq(expected))
+        );
     }
 
     #[test]
