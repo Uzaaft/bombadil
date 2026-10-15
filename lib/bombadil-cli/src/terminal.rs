@@ -122,7 +122,7 @@ pub enum Command {
         #[arg(long)]
         swarm: bool,
         /// Number of test runs to execute in parallel.
-        #[arg(long, default_value = "1")]
+        #[arg(long, default_value = "8")]
         parallelism: NonZeroUsize,
 
         /// Terminal columns at startup

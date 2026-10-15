@@ -234,7 +234,7 @@ pub struct FuzzOptions {
     #[arg(long)]
     pub swarm: bool,
     /// Number of test runs to execute in parallel.
-    #[arg(long, default_value = "1")]
+    #[arg(long, default_value = "8")]
     pub parallelism: NonZeroUsize,
 
     #[arg(long, value_parser = duration::parse_duration, default_value = "5m")]
